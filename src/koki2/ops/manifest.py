@@ -6,8 +6,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import jax
-
 from koki2.ops.run_io import utc_now_iso, write_json
 
 
@@ -25,6 +23,8 @@ def try_get_git_commit(cwd: Path) -> str | None:
 
 
 def collect_manifest(*, seed: int, config: dict[str, Any], cwd: Path) -> dict[str, Any]:
+    import jax
+
     return {
         "created_at_utc": utc_now_iso(),
         "seed": seed,
@@ -50,4 +50,3 @@ def collect_manifest(*, seed: int, config: dict[str, Any], cwd: Path) -> dict[st
 
 def write_manifest(out_dir: str | Path, manifest: dict[str, Any]) -> None:
     write_json(Path(out_dir) / "manifest.json", manifest)
-

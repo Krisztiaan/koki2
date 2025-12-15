@@ -2,23 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
-import numpy as np
-
-from koki2.evo.openai_es import run_openai_es
-from koki2.genome.direct import DirectGenome, make_dev_config
-from koki2.ops.manifest import collect_manifest, write_manifest
+from koki2.ops.jax_setup import activate_jax_compilation_cache, configure_jax_compilation_cache
 from koki2.ops.run_io import ensure_dir, utc_now_iso
-from koki2.sim.orchestrator import (
-    simulate_lifetime,
-    simulate_lifetime_baseline_greedy,
-    simulate_lifetime_baseline_random,
-    simulate_lifetime_baseline_stay,
-)
-from koki2.types import ChemotaxisEnvSpec, ESConfig, EvalConfig, FitnessSummary, MVTConfig, SimConfig
 
 
 def _default_out_dir(tag: str, seed: int) -> Path:
@@ -26,14 +15,7 @@ def _default_out_dir(tag: str, seed: int) -> Path:
     return Path("runs") / f"{stamp}_{tag}_seed{seed}"
 
 
-def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="koki2")
-    sub = p.add_subparsers(dest="cmd", required=True)
-
-    evo = sub.add_parser("evo-l0", help="Run a tiny OpenAI-ES loop on L0 chemotaxis.")
-    evo.add_argument("--seed", type=int, default=0)
-    evo.add_argument("--out-dir", type=str, default=None)
-
+def _add_evo_l0_common_args(evo: argparse.ArgumentParser) -> None:
     evo.add_argument("--width", type=int, default=64)
     evo.add_argument("--height", type=int, default=1)
     evo.add_argument("--num-sources", type=int, default=1, help="Number of identical energy sources (L0.2).")
@@ -105,6 +87,18 @@ def _build_parser() -> argparse.ArgumentParser:
     evo.add_argument("--generations", type=int, default=20)
     evo.add_argument("--sigma", type=float, default=0.1)
     evo.add_argument("--lr", type=float, default=0.05)
+    evo.add_argument(
+        "--jit-es",
+        action="store_true",
+        default=False,
+        help="JIT the ES loop and avoid per-generation host/device sync (faster for long runs / GPUs).",
+    )
+    evo.add_argument(
+        "--log-every",
+        type=int,
+        default=1,
+        help="Write one generations.jsonl entry every N generations (only affects logging).",
+    )
 
     evo.add_argument("--success-bonus", type=float, default=50.0)
     evo.add_argument("--fitness-alpha", type=float, default=1.0)
@@ -117,6 +111,36 @@ def _build_parser() -> argparse.ArgumentParser:
     evo.add_argument("--mvt-min-action-entropy", type=float, default=0.0)
     evo.add_argument("--mvt-min-energy-gained", type=float, default=0.0)
     evo.add_argument("--mvt-fail-fitness", type=float, default=-1e9)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="koki2")
+    p.add_argument(
+        "--jax-cache-dir",
+        type=str,
+        default=None,
+        help="Enable persistent JAX compilation cache by setting JAX_COMPILATION_CACHE_DIR (default is OS cache dir).",
+    )
+    p.add_argument(
+        "--no-jax-cache",
+        action="store_true",
+        default=False,
+        help="Disable JAX persistent compilation cache for this invocation.",
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    evo = sub.add_parser("evo-l0", help="Run a tiny OpenAI-ES loop on L0 chemotaxis.")
+    evo.add_argument("--seed", type=int, default=0)
+    evo.add_argument("--out-dir", type=str, default=None)
+    _add_evo_l0_common_args(evo)
+
+    batch = sub.add_parser("batch-evo-l0", help="Run multiple evo-l0 runs in one process (amortize compilation).")
+    batch.add_argument("--seeds", type=str, default=None, help="Comma/space-separated seed list (e.g. '0,1,2').")
+    batch.add_argument("--seed-start", type=int, default=0, help="Start seed if --seeds is omitted.")
+    batch.add_argument("--seed-count", type=int, default=3, help="Number of seeds if --seeds is omitted.")
+    batch.add_argument("--out-root", type=str, default=None, help="Root directory for run dirs (default: runs/).")
+    batch.add_argument("--tag", type=str, default="batch-evo-l0", help="Tag prefix used in run dir names.")
+    _add_evo_l0_common_args(batch)
 
     base = sub.add_parser("baseline-l0", help="Evaluate simple baselines on L0 chemotaxis.")
     base.add_argument("--seed", type=int, default=0)
@@ -170,8 +194,37 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _parse_seed_list(*, seeds: str | None, seed_start: int, seed_count: int) -> list[int]:
+    if seeds is not None and seeds.strip():
+        parts = [p for p in re.split(r"[,\s]+", seeds.strip()) if p]
+        return [int(p) for p in parts]
+    return list(range(int(seed_start), int(seed_start) + int(seed_count)))
+
+
 def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
+
+    configure_jax_compilation_cache(cache_dir=args.jax_cache_dir, disable=bool(args.no_jax_cache))
+
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    activate_jax_compilation_cache()
+
+    from jax.flatten_util import ravel_pytree
+
+    from koki2.evo.openai_es import make_openai_es_jit_runner, run_openai_es
+    from koki2.genome.direct import DirectGenome, genome_init, make_dev_config
+    from koki2.ops.manifest import collect_manifest, write_manifest
+    from koki2.ops.run_io import append_jsonl_many, write_json
+    from koki2.sim.orchestrator import (
+        simulate_lifetime,
+        simulate_lifetime_baseline_greedy,
+        simulate_lifetime_baseline_random,
+        simulate_lifetime_baseline_stay,
+    )
+    from koki2.types import ChemotaxisEnvSpec, ESConfig, EvalConfig, FitnessSummary, MVTConfig, SimConfig
 
     if args.cmd == "evo-l0":
         mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
@@ -215,7 +268,7 @@ def main(argv: list[str] | None = None) -> None:
             tau_m=args.tau_m,
             plast_enabled=bool(args.plast_enabled),
             plast_eta=max(float(args.plast_eta), 0.0),
-            plast_lambda=float(jnp.clip(jnp.array(args.plast_lambda, dtype=jnp.float32), 0.0, 1.0)),
+            plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
             modulator_kind=mod_kind,
             mod_drive_scale=float(args.mod_drive_scale),
         )
@@ -265,12 +318,182 @@ def main(argv: list[str] | None = None) -> None:
             out_dir=out_dir,
             env_spec=env_spec,
             dev_cfg=dev_cfg,
+            topology_seed=topology_seed,
             sim_cfg=sim_cfg,
             eval_cfg=eval_cfg,
             es_cfg=es_cfg,
             mvt_cfg=mvt_cfg,
+            jit_es=bool(args.jit_es),
+            log_every=max(int(args.log_every), 1),
         )
         print(f"best_fitness={res.best_fitness:.4f} out_dir={out_dir}")
+        return
+
+    if args.cmd == "batch-evo-l0":
+        seeds = _parse_seed_list(seeds=args.seeds, seed_start=args.seed_start, seed_count=args.seed_count)
+        if len(seeds) < 1:
+            raise SystemExit("empty seed list")
+
+        energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
+        num_sources = max(int(args.num_sources), 1)
+        num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
+        mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
+
+        env_spec = ChemotaxisEnvSpec(
+            width=args.width,
+            height=args.height,
+            max_steps=args.steps,
+            energy_init=args.energy_init,
+            energy_decay=energy_decay,
+            energy_gain=args.energy_gain,
+            terminate_on_reach=args.terminate_on_reach,
+            obs_noise=args.obs_noise,
+            grad_dropout_p=float(args.grad_dropout_p),
+            grad_gain_min=args.grad_gain_min,
+            grad_gain_max=args.grad_gain_max,
+            grad_gain_start_phi=args.grad_gain_start_phi,
+            grad_gain_end_phi=args.grad_gain_end_phi,
+            grad_bins_min=args.grad_bins_min,
+            grad_bins_max=args.grad_bins_max,
+            grad_bins_start_phi=args.grad_bins_start_phi,
+            grad_bins_end_phi=args.grad_bins_end_phi,
+            num_sources=num_sources,
+            num_bad_sources=num_bad_sources,
+            bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+            good_only_gradient=bool(args.good_only_gradient),
+            source_deplete=bool(args.deplete_sources),
+            source_respawn_delay=max(int(args.respawn_delay), 0),
+        )
+        sim_cfg = SimConfig(
+            fitness_alpha=args.fitness_alpha,
+            fitness_beta=args.fitness_beta,
+            success_bonus=args.success_bonus,
+        )
+        eval_cfg = EvalConfig(episodes=args.episodes)
+        es_cfg = ESConfig(
+            pop_size=args.pop_size,
+            generations=args.generations,
+            sigma=args.sigma,
+            lr=args.lr,
+        )
+        mvt_cfg = MVTConfig(
+            enabled=args.mvt,
+            episodes=args.mvt_episodes,
+            steps=args.mvt_steps,
+            min_alive_steps=args.mvt_min_alive_steps,
+            min_action_entropy=args.mvt_min_action_entropy,
+            min_energy_gained=args.mvt_min_energy_gained,
+            fail_fitness=args.mvt_fail_fitness,
+        )
+
+        out_root = Path(args.out_root) if args.out_root is not None else Path("runs")
+        ensure_dir(out_root)
+        stamp = utc_now_iso().replace(":", "").replace("+", "").replace(".", "")
+
+        # Build a runner once to amortize compilation; dev_cfg is an argument, so this can
+        # still be reused even if topology differs across seeds.
+        proto_topology_seed = args.topology_seed if args.topology_seed is not None else seeds[0] + 12345
+        proto_dev_cfg = make_dev_config(
+            n_neurons=args.n_neurons,
+            obs_dim=4,
+            num_actions=5,
+            k_edges_per_neuron=args.k_edges,
+            topology_seed=proto_topology_seed,
+            theta=args.theta,
+            tau_m=args.tau_m,
+            plast_enabled=bool(args.plast_enabled),
+            plast_eta=max(float(args.plast_eta), 0.0),
+            plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
+            modulator_kind=mod_kind,
+            mod_drive_scale=float(args.mod_drive_scale),
+        )
+        proto_mean = genome_init(jax.random.PRNGKey(0), proto_dev_cfg, scale=0.1)
+        _proto_vec, unravel = ravel_pytree(proto_mean)
+        dim = int(_proto_vec.shape[0])
+
+        es_run = make_openai_es_jit_runner(
+            env_spec=env_spec,
+            sim_cfg=sim_cfg,
+            eval_cfg=eval_cfg,
+            es_cfg=es_cfg,
+            mvt_cfg=mvt_cfg,
+            unravel=unravel,
+            dim=dim,
+            log_every=max(int(args.log_every), 1),
+        )
+
+        for seed in seeds:
+            topology_seed = args.topology_seed if args.topology_seed is not None else seed + 12345
+            dev_cfg = make_dev_config(
+                n_neurons=args.n_neurons,
+                obs_dim=4,
+                num_actions=5,
+                k_edges_per_neuron=args.k_edges,
+                topology_seed=topology_seed,
+                theta=args.theta,
+                tau_m=args.tau_m,
+                plast_enabled=bool(args.plast_enabled),
+                plast_eta=max(float(args.plast_eta), 0.0),
+                plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
+                modulator_kind=mod_kind,
+                mod_drive_scale=float(args.mod_drive_scale),
+            )
+
+            out_dir = out_root / f"{stamp}_{args.tag}_seed{seed}"
+            ensure_dir(out_dir)
+
+            config = {
+                "env_spec": env_spec._asdict(),
+                "dev_cfg": {
+                    **dev_cfg._asdict(),
+                    "edge_index": None,
+                    "edge_index_shape": tuple(dev_cfg.edge_index.shape),
+                    "topology_seed": topology_seed,
+                },
+                "sim_cfg": sim_cfg._asdict(),
+                "eval_cfg": eval_cfg._asdict(),
+                "es_cfg": es_cfg._asdict(),
+                "mvt_cfg": mvt_cfg._asdict(),
+            }
+            write_json(out_dir / "config.json", {"seed": seed, **config})
+            manifest = collect_manifest(seed=seed, config=config, cwd=Path.cwd())
+            write_manifest(out_dir, manifest)
+
+            master = jax.random.PRNGKey(seed)
+            init_key = jax.random.fold_in(master, 0)
+            mean = genome_init(init_key, dev_cfg, scale=0.1)
+            mean_vec, _ = ravel_pytree(mean)
+
+            best_fit_final, best_vec_final, logs = es_run(master, mean_vec, dev_cfg)
+            best_fitness = float(jax.device_get(best_fit_final))
+            best_genome = unravel(best_vec_final)
+
+            host_logs = jax.device_get(logs)
+            host_best = np.asarray(host_logs.best_fitness)
+            host_mean = np.asarray(host_logs.mean_fitness)
+            host_median = np.asarray(host_logs.median_fitness)
+            host_mvt = np.asarray(host_logs.mvt_pass_rate)
+
+            records: list[dict[str, object]] = []
+            for gen in range(int(es_cfg.generations)):
+                if np.isnan(host_best[gen]):
+                    continue
+                mvt_val = None if np.isnan(host_mvt[gen]) else float(host_mvt[gen])
+                records.append(
+                    {
+                        "generation": int(gen),
+                        "best_fitness": float(host_best[gen]),
+                        "mean_fitness": float(host_mean[gen]),
+                        "median_fitness": float(host_median[gen]),
+                        "mvt_pass_rate": mvt_val,
+                    }
+                )
+            append_jsonl_many(out_dir / "generations.jsonl", records)
+
+            best_np = jax.tree_util.tree_map(lambda x: np.asarray(jax.device_get(x)), best_genome)._asdict()
+            np.savez(out_dir / "best_genome.npz", **best_np)
+            print(f"seed={seed} best_fitness={best_fitness:.4f} out_dir={out_dir}")
+
         return
 
     if args.cmd == "baseline-l0":

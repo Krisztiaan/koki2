@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 
 from koki2.agent.heuristic import greedy_gradient_action
-from koki2.agent.snn import agent_apply_plasticity, agent_forward, agent_init
+from koki2.agent.snn import (
+    agent_apply_plasticity,
+    agent_apply_plasticity_nolog,
+    agent_forward,
+    agent_forward_nolog,
+    agent_init,
+)
 from koki2.envs.chemotaxis import env_init, env_step
 from koki2.genome.direct import DirectGenome, develop
 from koki2.types import (
@@ -224,6 +232,273 @@ def simulate_lifetime(
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
         mean_abs_dw_mean=mean_abs_dw_mean,
+    )
+
+
+class MVTSummary(NamedTuple):
+    fitness_scalar: Array
+    t_alive: Array
+    energy_gained_total: Array
+    action_entropy: Array
+
+
+def simulate_lifetime_fitness(
+    genome: DirectGenome,
+    env_spec: ChemotaxisEnvSpec,
+    dev_cfg: DevConfig,
+    sim_cfg: SimConfig,
+    rng: Array,
+    t_idx: Array,
+) -> Array:
+    steps = t_idx.shape[0]
+    rng_develop, rng_env, rng_agent, rng_rollout = jax.random.split(rng, 4)
+    params = develop(genome, dev_cfg, rng_develop)
+
+    env_state, obs, internal = env_init(env_spec, rng_env)
+    agent_state = agent_init(params, rng_agent)
+
+    drive_prev = drive(internal, sim_cfg)
+    alive = jnp.array(True, dtype=jnp.bool_)
+    energy_gained_total = jnp.array(0.0, dtype=jnp.float32)
+    t_alive = jnp.array(0, dtype=jnp.int32)
+    success = jnp.array(False, dtype=jnp.bool_)
+
+    init = (
+        env_state,
+        obs,
+        internal,
+        agent_state,
+        drive_prev,
+        alive,
+        energy_gained_total,
+        t_alive,
+        success,
+    )
+
+    def step(carry, t):
+        (
+            env_state,
+            obs,
+            internal,
+            agent_state,
+            drive_prev,
+            alive,
+            energy_gained_total,
+            t_alive,
+            success,
+        ) = carry
+
+        dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
+        step_key = jax.random.fold_in(rng_rollout, t)
+        rng_agent, rng_env = jax.random.split(step_key, 2)
+
+        def do(_):
+            fwd = agent_forward_nolog(params, agent_state, obs, internal, dev_state, rng_agent)
+            env_state2, obs2, internal2, env_log, done = env_step(
+                env_spec, env_state, fwd.action, dev_state, rng_env
+            )
+            drive2 = drive(internal2, sim_cfg)
+            _reward = drive_prev - drive2
+            event_delta = env_log.energy_gained - env_log.integrity_lost
+            mod_signal_raw = jnp.where(
+                params.modulator_kind == jnp.array(1, dtype=jnp.int32),
+                _reward,
+                jnp.where(
+                    params.modulator_kind == jnp.array(2, dtype=jnp.int32),
+                    event_delta,
+                    jnp.array(0.0, dtype=jnp.float32),
+                ),
+            )
+            agent_state2 = agent_apply_plasticity_nolog(params, agent_state, fwd, mod_signal_raw)
+
+            energy_gained_total2 = energy_gained_total + env_log.energy_gained
+            t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
+            success2 = jnp.logical_or(success, env_log.reached_source)
+            alive2 = jnp.logical_and(alive, jnp.logical_not(done))
+            return (
+                env_state2,
+                obs2,
+                internal2,
+                agent_state2,
+                drive2,
+                alive2,
+                energy_gained_total2,
+                t_alive2,
+                success2,
+            )
+
+        def skip(_):
+            return (
+                env_state,
+                obs,
+                internal,
+                agent_state,
+                drive_prev,
+                alive,
+                energy_gained_total,
+                t_alive,
+                success,
+            )
+
+        carry2 = jax.lax.cond(alive, do, skip, operand=None)
+        return carry2, ()
+
+    final, _ = jax.lax.scan(step, init, xs=t_idx)
+    (
+        _env_state,
+        _obs,
+        _internal,
+        _agent_state,
+        _drive_prev,
+        _alive,
+        energy_gained_total,
+        t_alive,
+        success,
+    ) = final
+
+    fitness = (
+        jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
+        + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
+        + jnp.array(sim_cfg.success_bonus, dtype=jnp.float32) * success.astype(jnp.float32)
+    )
+    return fitness
+
+
+def simulate_lifetime_mvt(
+    genome: DirectGenome,
+    env_spec: ChemotaxisEnvSpec,
+    dev_cfg: DevConfig,
+    sim_cfg: SimConfig,
+    rng: Array,
+    t_idx: Array,
+) -> MVTSummary:
+    steps = t_idx.shape[0]
+    rng_develop, rng_env, rng_agent, rng_rollout = jax.random.split(rng, 4)
+    params = develop(genome, dev_cfg, rng_develop)
+
+    env_state, obs, internal = env_init(env_spec, rng_env)
+    agent_state = agent_init(params, rng_agent)
+
+    drive_prev = drive(internal, sim_cfg)
+    alive = jnp.array(True, dtype=jnp.bool_)
+    energy_gained_total = jnp.array(0.0, dtype=jnp.float32)
+    t_alive = jnp.array(0, dtype=jnp.int32)
+    success = jnp.array(False, dtype=jnp.bool_)
+    num_actions = params.motor_b.shape[0]
+    action_counts = jnp.zeros((num_actions,), dtype=jnp.float32)
+
+    init = (
+        env_state,
+        obs,
+        internal,
+        agent_state,
+        drive_prev,
+        alive,
+        energy_gained_total,
+        t_alive,
+        success,
+        action_counts,
+    )
+
+    def step(carry, t):
+        (
+            env_state,
+            obs,
+            internal,
+            agent_state,
+            drive_prev,
+            alive,
+            energy_gained_total,
+            t_alive,
+            success,
+            action_counts,
+        ) = carry
+
+        dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
+        step_key = jax.random.fold_in(rng_rollout, t)
+        rng_agent, rng_env = jax.random.split(step_key, 2)
+
+        def do(_):
+            fwd = agent_forward_nolog(params, agent_state, obs, internal, dev_state, rng_agent)
+            env_state2, obs2, internal2, env_log, done = env_step(
+                env_spec, env_state, fwd.action, dev_state, rng_env
+            )
+            drive2 = drive(internal2, sim_cfg)
+            _reward = drive_prev - drive2
+            event_delta = env_log.energy_gained - env_log.integrity_lost
+            mod_signal_raw = jnp.where(
+                params.modulator_kind == jnp.array(1, dtype=jnp.int32),
+                _reward,
+                jnp.where(
+                    params.modulator_kind == jnp.array(2, dtype=jnp.int32),
+                    event_delta,
+                    jnp.array(0.0, dtype=jnp.float32),
+                ),
+            )
+            agent_state2 = agent_apply_plasticity_nolog(params, agent_state, fwd, mod_signal_raw)
+
+            energy_gained_total2 = energy_gained_total + env_log.energy_gained
+            t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
+            success2 = jnp.logical_or(success, env_log.reached_source)
+            alive2 = jnp.logical_and(alive, jnp.logical_not(done))
+            action_counts2 = action_counts.at[fwd.action].add(jnp.array(1.0, dtype=jnp.float32))
+            return (
+                env_state2,
+                obs2,
+                internal2,
+                agent_state2,
+                drive2,
+                alive2,
+                energy_gained_total2,
+                t_alive2,
+                success2,
+                action_counts2,
+            )
+
+        def skip(_):
+            return (
+                env_state,
+                obs,
+                internal,
+                agent_state,
+                drive_prev,
+                alive,
+                energy_gained_total,
+                t_alive,
+                success,
+                action_counts,
+            )
+
+        carry2 = jax.lax.cond(alive, do, skip, operand=None)
+        return carry2, ()
+
+    final, _ = jax.lax.scan(step, init, xs=t_idx)
+    (
+        _env_state,
+        _obs,
+        _internal,
+        _agent_state,
+        _drive_prev,
+        _alive,
+        energy_gained_total,
+        t_alive,
+        success,
+        action_counts,
+    ) = final
+
+    safe_steps = jnp.maximum(t_alive.astype(jnp.float32), jnp.array(1.0, dtype=jnp.float32))
+    p = action_counts / safe_steps
+    action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
+    fitness = (
+        jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
+        + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
+        + jnp.array(sim_cfg.success_bonus, dtype=jnp.float32) * success.astype(jnp.float32)
+    )
+    return MVTSummary(
+        fitness_scalar=fitness,
+        t_alive=t_alive,
+        energy_gained_total=energy_gained_total,
+        action_entropy=action_entropy,
     )
 
 

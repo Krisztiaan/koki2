@@ -1496,3 +1496,131 @@ Observed outputs (selected; best-genome only):
 Interpretation (provisional):
 - Event-based modulation still produces extremely small average applied updates (`mean_abs_dw_mean≈1e-5` to `3e-5` at `scale=4`), and most runs remain close to the non-plastic regime.
 - One seed shows a lower-fitness but “safer”-looking pattern (higher `mean_integrity_min`, lower `mean_bad_arrivals`) that could be real or could be an ES-budget artifact; it needs replication and a more systematic scale sweep before treating it as evidence.
+
+---
+
+## 2025-12-15 — Infrastructure check: RunPod GPU bursts for `koki2 evo-l0`
+
+Goal: test whether a “burst GPU” workflow (spin up a cheap GPU pod, run a handful of experiments, tear down) yields meaningful wall-time speedups for our current `evo-l0` runs compared to local CPU, without changing the research task.
+
+Local baseline (Mac, force CPU; identical env knobs to our Stage 2 benchmark):
+```bash
+/usr/bin/time -p env JAX_PLATFORM_NAME=cpu uv run koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_local_cpu_es10_seed0 \
+  --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+
+/usr/bin/time -p env JAX_PLATFORM_NAME=cpu uv run koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_local_cpu_es50_seed0 \
+  --generations 50 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+
+/usr/bin/time -p env JAX_PLATFORM_NAME=cpu uv run koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_local_cpu_es10_pop512_seed0 \
+  --generations 10 --pop-size 512 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+```
+
+Observed times (wall clock):
+- `es10 pop64`: `real 15.52s`
+- `es50 pop64`: `real 59.11s`
+- `es10 pop512`: `real 20.28s`
+
+RunPod setup notes (CLI + SSH):
+- Used `runpodctl` + public IP pod and installed CUDA JAX via `uv pip install -U "jax[cuda12]"`.
+- SSH auth required injecting the public key into the container start command (the `$PUBLIC_KEY` placeholder approach did not work as expected in our first attempt).
+- Verified JAX sees GPU with `devices [CudaDevice(id=0)]`.
+
+### RunPod test A: RTX 3070 (community cloud)
+
+Command (remote; same args, only out-dir differs):
+```bash
+time -p koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_runpod_rtx3070_gpu_es10_seed0 \
+  --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+
+time -p koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_runpod_rtx3070_gpu_es50_seed0 \
+  --generations 50 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+
+time -p koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_runpod_rtx3070_gpu_es10_pop512_seed0 \
+  --generations 10 --pop-size 512 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+```
+
+Observed times:
+- `es10 pop64`: `real 26.28s`
+- `es50 pop64`: `real 88.08s`
+- `es10 pop512`: `real 27.38s`
+
+### RunPod test B: RTX 3090 Ti (community cloud)
+
+Observed times:
+- `es10 pop64`: `real 34.79s`
+- `es50 pop64`: `real 130.18s`
+- `es10 pop512`: `real 33.53s`
+
+Interpretation (provisional):
+- For our current execution pattern (“one CLI invocation per ES run”), GPU pods are slower than local CPU on wall time at these sizes. The likely cause is that our ES loop does frequent host/device synchronization per generation and does not amortize compile/startup costs (especially punishing in short burst runs).
+- Conclusion: to make burst GPUs useful for our thesis workflow, we likely need a harness change that amortizes overhead without changing the research task itself: e.g., batch many runs in a single long-lived process (multi-seed/sweep runner) and/or a JIT-friendly ES loop that avoids per-generation `device_get`/I/O.
+
+---
+
+## 2025-12-15 — Harness improvement: JIT-friendly ES loop (`--jit-es`, `--log-every`)
+
+Goal: improve throughput of large experiment batches (and make GPUs viable) without changing the scientific task, by eliminating per-generation host/device synchronization and Python-loop overhead in the ES harness.
+
+Changes:
+- `src/koki2/evo/openai_es.py`: added an optional JIT/scan path controlled by `jit_es`, which keeps ES state on-device and writes `generations.jsonl` only after the run (still deterministically keyed by `seed` + generation index).
+- `src/koki2/cli.py`: added `koki2 evo-l0 --jit-es` and `--log-every N` (log thinning; also applied to the non-JIT path).
+
+Quick local verification (CPU):
+```bash
+env JAX_PLATFORM_NAME=cpu uv run koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_bench_local_cpu_es3_jit_seed0 \
+  --jit-es --log-every 1 \
+  --generations 3 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5
+```
+
+Observed output:
+- `best_fitness=179.2500`
+- `generations.jsonl` has 3 entries (generations 0/1/2).
+
+Interpretation (provisional):
+- This makes it possible to re-test RunPod GPU bursts fairly: `--jit-es` should reduce the per-generation sync that likely dominated the earlier GPU wall time.
+
+---
+
+## 2025-12-15 — Harness improvement: rollout fast paths + batch runner ergonomics
+
+Goal: reduce per-rollout overhead and amortize repeated setup work (compilation + process startup) without changing the scientific task.
+
+Changes:
+- `src/koki2/agent/snn.py`: added `agent_forward_nolog` and `agent_apply_plasticity_nolog` to avoid computing logging-only statistics in throughput-critical paths.
+- `src/koki2/sim/orchestrator.py`: added `simulate_lifetime_fitness` + `simulate_lifetime_mvt` (minimal summaries), used for ES evaluation and MVT checks.
+- `src/koki2/evo/openai_es.py`: `evaluate_population` now uses the new fast paths; `run_openai_es` now records `topology_seed` in `config.json` when provided.
+- `src/koki2/ops/run_io.py`: added `append_jsonl_many` to reduce per-record file open/close overhead.
+- `src/koki2/cli.py`: `evo-l0` passes `topology_seed` through to `run_openai_es`; `batch-evo-l0` uses single-pass JSONL writes and reduced host/device transfers for logs.
+
+Verification:
+```bash
+uv run pytest
+uv run koki2 evo-l0 --seed 0 --jit-es --log-every 1 --generations 2 --pop-size 16 --episodes 2 --steps 32
+uv run koki2 batch-evo-l0 --seed-start 0 --seed-count 2 --log-every 1 --generations 2 --pop-size 16 --episodes 2 --steps 32
+uv run koki2 eval-run --run-dir runs/2025-12-15_smoke_evo_jit2 --episodes 4 --seed 0 --baseline-policy greedy
+```
+
+Notes (provisional):
+- These changes should improve throughput on both CPU and GPU by removing logging-only computations from the inner rollout loop (e.g., spike-rate means, per-step plasticity magnitude summaries) and by reducing per-run/per-generation file I/O overhead.
+- A dedicated throughput benchmark is still needed to quantify gains and to check for backend-specific regressions.

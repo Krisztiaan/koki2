@@ -214,6 +214,8 @@ Acceptance checks:
 Per PR-sized change:
 1. `uv run pytest`
 2. A tiny ES smoke run (few generations) to catch tracing/shape regressions.
+   - Prefer `--jit-es` when testing GPU/backends to avoid per-generation host sync overhead.
+   - For multi-seed sanity checks, prefer `koki2 batch-evo-l0` to amortize compilation.
 3. If touching determinism or RNG: rerun `tests/test_stage0_determinism.py`.
 
 Before moving to distributed/GPU:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 from typing import NamedTuple
@@ -81,6 +82,54 @@ def agent_forward(
     )
 
 
+class AgentForwardOutNoLog(NamedTuple):
+    v: Array
+    spike: Array
+    elig_next: Array
+    action: Array
+    mod_spike: Array
+
+
+def agent_forward_nolog(
+    params: AgentParams,
+    state: AgentState,
+    obs: Array,
+    internal: InternalState,
+    dev: DevelopmentState,
+    rng: Array,
+) -> AgentForwardOutNoLog:
+    del internal, dev, rng
+
+    n = params.obs_w.shape[0]
+    src = params.edge_index[:, 0]
+    dst = params.edge_index[:, 1]
+
+    obs_in = params.obs_w @ obs.astype(jnp.float32)
+    rec_in = _segment_sum(state.w * state.spike[src], dst, num_segments=n)
+    i_t = obs_in + rec_in
+
+    v = state.v * params.v_decay + i_t
+    spike = (v > params.theta).astype(jnp.float32)
+    v = v - spike * params.theta
+
+    mod_spike = jnp.tanh(jnp.dot(params.mod_w, spike))
+
+    pre = state.spike[src]
+    post = spike[dst]
+    elig_next = params.plast_lambda * state.elig + (pre * post)
+
+    logits = jnp.dot(spike, params.motor_w) + params.motor_b
+    action = jnp.argmax(logits).astype(jnp.int32)
+
+    return AgentForwardOutNoLog(
+        v=v,
+        spike=spike,
+        elig_next=elig_next,
+        action=action,
+        mod_spike=mod_spike,
+    )
+
+
 def agent_apply_plasticity(
     params: AgentParams,
     state: AgentState,
@@ -105,3 +154,24 @@ def agent_apply_plasticity(
         mean_abs_dw=jnp.mean(jnp.abs(dw_applied)),
     )
     return AgentState(v=fwd.v, spike=fwd.spike, w=w, elig=elig), log
+
+
+def agent_apply_plasticity_nolog(
+    params: AgentParams,
+    state: AgentState,
+    fwd: AgentForwardOut | AgentForwardOutNoLog,
+    mod_signal_raw: Array,
+) -> AgentState:
+    def do(_):
+        mod_drive = jnp.tanh(params.mod_drive_scale * mod_signal_raw.astype(jnp.float32))
+        use_signal = params.modulator_kind != jnp.array(0, dtype=jnp.int32)
+        modulator = jnp.where(use_signal, mod_drive, fwd.mod_spike)
+
+        dw = params.plast_eta * modulator * fwd.elig_next
+        w_next = jnp.clip(state.w + dw, min=-3.0, max=3.0)
+        return AgentState(v=fwd.v, spike=fwd.spike, w=w_next, elig=fwd.elig_next)
+
+    def skip(_):
+        return AgentState(v=fwd.v, spike=fwd.spike, w=state.w, elig=state.elig)
+
+    return jax.lax.cond(params.plast_enabled, do, skip, operand=None)

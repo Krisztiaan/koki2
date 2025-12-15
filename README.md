@@ -24,6 +24,22 @@ Run a tiny L0 evolution smoke test:
 uv run koki2 evo-l0 --generations 5 --pop-size 64 --steps 128
 ```
 
+## Performance notes
+
+For longer runs and GPU backends, use the JIT-friendly ES loop to avoid per-generation host/device synchronization:
+
+```bash
+uv run koki2 evo-l0 --jit-es --log-every 5 --generations 200 --pop-size 256 --steps 128
+```
+
+For multi-seed sweeps, amortize compilation and process startup by running many seeds in a single process:
+
+```bash
+uv run koki2 batch-evo-l0 --seed-start 0 --seed-count 8 --log-every 5 --generations 200 --pop-size 256 --steps 128
+```
+
+The CLI enables a persistent JAX compilation cache by default (via `JAX_COMPILATION_CACHE_DIR`). Override with `--jax-cache-dir <path>` or disable with `--no-jax-cache`.
+
 Evaluate the saved `best_genome.npz` on more episodes (recommended for interpretation; compares to a baseline on the same episode keys):
 
 ```bash
