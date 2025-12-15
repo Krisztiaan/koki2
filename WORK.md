@@ -1662,3 +1662,22 @@ Verification:
 ```bash
 uv run pytest
 ```
+
+---
+
+## 2025-12-15 — Google Colab bootstrap (GPU/TPU)
+
+Goal: make the repo easy to run in Google Colab (TPU/GPU runtimes) with a notebook-first bootstrap and without requiring a Python 3.12-only kernel.
+
+Changes:
+- `pyproject.toml`: broadened `requires-python` to `>=3.10,<3.14` (Colab compatibility) and set Ruff `target-version` to `py310`.
+- `src/koki2/ops/run_io.py`: replaced the Python 3.11+ `datetime.UTC` import with `timezone.utc` to keep `utc_now_iso()` working on Python 3.10.
+- `colab/koki2_colab.ipynb`: added a Colab notebook that installs the appropriate JAX build for TPU/GPU/CPU and runs a tiny `evo-l0` smoke test.
+- `colab/README.md`, `README.md`: added a pointer to the Colab notebook.
+
+Verification (local):
+```bash
+uv run python -c "import json; json.load(open('colab/koki2_colab.ipynb','r',encoding='utf-8'))"
+uv run --python 3.10 --extra dev pytest
+uv run --python 3.12 --extra dev pytest
+```

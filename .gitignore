@@ -10,6 +10,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 *.egg
+.ipynb_checkpoints/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
@@ -19,4 +20,3 @@ __pycache__/
 runs/
 artifacts/
 checkpoints/
-

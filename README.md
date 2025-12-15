@@ -9,7 +9,7 @@ Primary design goals:
 
 ## Quickstart (uv)
 
-This repo assumes a supported Python (recommended: 3.12). On this machine the system Python is 3.14, so create a 3.12 venv via `uv`:
+This repo supports Python >=3.10 (recommended: 3.12). On this machine the system Python is 3.14, so create a 3.12 venv via `uv`:
 
 ```bash
 uv python install 3.12
@@ -23,6 +23,10 @@ Run a tiny L0 evolution smoke test:
 ```bash
 uv run koki2 evo-l0 --generations 5 --pop-size 64 --steps 128
 ```
+
+## Google Colab (GPU/TPU)
+
+Use `colab/koki2_colab.ipynb` to run on Colab with GPU (e.g. L4/T4/A100) or TPU runtimes.
 
 ## Performance notes
 
