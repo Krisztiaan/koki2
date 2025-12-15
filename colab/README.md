@@ -18,6 +18,10 @@ Use `colab/stage1_l02_bad_sources.ipynb` for the **Stage 1** L0.2 harmful source
 
 Use `colab/stage1_l10_deplete_bad_sources.ipynb` for the **Stage 1** L1.0 deplete/respawn + L0.2 harmful sources experiment (multi-seed ES + held-out eval), aligned with `WORK.md`.
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/stage1_l10_effectsize_grid.ipynb)
+
+Use `colab/stage1_l10_effectsize_grid.ipynb` for the **Stage 1** pre-registered mini-grid (steps × hazard persistence × success bonus) that strengthens the “L1.0 amplifies survival-weighted strategies” evidence, aligned with `WORK.md`.
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/stage2_l11_plastic_vs_noplast.ipynb)
 
 Use `colab/stage2_l11_plastic_vs_noplast.ipynb` for the **Stage 2** comparison: plastic vs no-plastic on L1.0 deplete/respawn + L1.1 intermittent gradient, aligned with `WORK.md`.

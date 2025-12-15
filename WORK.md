@@ -2054,3 +2054,49 @@ Aggregate across seeds 0..4 (computed from the held-out logs above; sample stdev
 Interpretation (provisional):
 - With `success_bonus=0`, the random baseline (near-full survival) is harder to beat on fitness in this long-horizon setup; the ES best-genomes are lower-fitness on average (and show substantially higher variance across seeds).
 - This suggests the reach/success shaping term is not just a cosmetic metric tweak: it meaningfully changes which strategies are selected under fixed compute, and should be treated as an explicit experimental axis (report both `success_bonus` setting and hazard metrics when comparing “survival-weighted” claims).
+
+---
+
+## 2025-12-15 — Pre-registered mini-grid: steps × bad-respawn × success-bonus (L1.0 + harmful sources)
+
+Goal:
+- Run a small, pre-registered grid to test whether “L1.0 amplifies survival-weighted strategies” is robust across (a) horizon length, (b) hazard persistence, and (c) success shaping — and to get stronger, more general statements than a single hand-picked configuration.
+
+Protocol:
+- Env base (all conditions):
+  - `--deplete-sources --respawn-delay 4`
+  - `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+  - `--bad-source-deplete-p 1.0` (avoid the “camp on a non-depleting hazard” confound noted above)
+- Grid:
+  - `--steps ∈ {128, 256}`
+  - `--bad-source-respawn-delay ∈ {0, 1, 4}`
+  - `--success-bonus ∈ {0, 50}`
+- ES budget (per condition): `--generations 30 --pop-size 64 --episodes 4` (JIT ES; `--jit-es`, `--log-every 10`)
+- Evaluation:
+  - best genomes: `koki2 eval-run` with `--episodes 512` at eval seeds `424242` and `0`
+  - baselines: `koki2 baseline-l0` greedy/random on the same eval seeds/episodes
+
+Runtime (local CPU):
+- End-to-end wall time was `12.51 min` for all 12 conditions (including training, baselines, and held-out eval).
+
+Artifacts:
+- Full stdout log: `runs/stage1_scans/2025-12-15_grid_l10_effectsize_es30_p64_ep4_eval512_2025-12-15_231730.txt`
+- Structured results (one JSON per baseline/best-genome eval): `runs/stage1_scans/2025-12-15_grid_l10_effectsize_es30_p64_ep4_eval512_2025-12-15_231730.jsonl`
+
+Key observed pattern (eval seed 424242; aggregated across seeds 0..4 per condition):
+- Across all 12 conditions:
+  - best-genome mean survival time `mean_t_alive` ranges `125.28–251.26`, while greedy ranges `77.8–103.9` (random stays near the horizon: `127.8–255.4`).
+  - best-genome `mean_bad_arrivals` ranges `1.1914–1.4922`, while greedy ranges `3.4082–3.5469` (random ranges `0.4062–0.6230`).
+  - best-genome `mean_integrity_min` ranges `0.6270–0.7021`, while greedy ranges `0.1196–0.1499` (random ranges `0.8442–0.8984`).
+- Put differently: for every grid point, ES best-genomes survive much longer and contact hazards much less than greedy; relative to greedy, the per-condition differences are large:
+  - `mean_bad_arrivals` improvement (greedy − best) ranges `1.9883–2.3102`
+  - `mean_integrity_min` improvement (best − greedy) ranges `0.4952–0.5712`
+  - `mean_t_alive` improvement (best − greedy) ranges `43.88–153.46` steps
+
+Success-bonus ablation (eval seed 424242; holds for all 6 grid points per horizon):
+- With `--success-bonus 50`, ES best-genomes beat the random baseline on mean fitness in **all** tested grid points.
+- With `--success-bonus 0`, ES best-genomes are below the random baseline on mean fitness in **all** tested grid points (random’s near-full survival dominates fitness when reaching sources carries no explicit bonus).
+
+Interpretation (provisional):
+- This grid supports a stronger statement than our earlier single-run comparisons: in L1.0 deplete/respawn + harmful sources, evolution reliably shifts toward substantially higher survival and lower hazard contact than naive greedy gradient chasing, and this holds across multiple hazard-persistence settings and horizons at a fixed ES budget.
+- The `success_bonus` term is a major selection-axis: it changes whether “survive + reach” strategies can beat “survive only” strategies under fixed compute; we should therefore keep reporting it explicitly in any claim about “survival-weighted strategy amplification”.
