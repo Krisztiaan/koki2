@@ -169,6 +169,7 @@ Latest check (2025-12-15; see `WORK.md` for full commands/output):
 - ES budget: `--generations 200 --pop-size 128 --episodes 8` across seeds 0..4.
 - Held-out eval: `koki2 eval-run --episodes 512 --seed 424242`.
 - Observed: mean best-genome held-out `mean_fitness=164.2683` (baseline random `133.9463`, baseline greedy `154.9092`).
+- Robustness: with `koki2 eval-run --seed 0` (512 episodes), mean best-genome held-out `mean_fitness=164.1002` (baseline greedy `153.7236`).
 
 Acceptance checks:
 - Across ≥3 seeds, best fitness improves over initial/random baseline.

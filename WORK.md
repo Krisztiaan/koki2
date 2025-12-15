@@ -1802,6 +1802,10 @@ Other held-out metrics (mean across seeds 0..4; computed from `runs/stage1_scans
 - best_genome mean_bad_arrivals: mean `1.3472` (baseline greedy `0.4492`, baseline random `0.9844`)
 - best_genome mean_integrity_min: mean `0.6632` (baseline greedy `0.8877`, baseline random `0.7539`)
 
+Robustness check (second held-out eval seed):
+- Re-ran the same `best_genome.npz` evaluations with `--seed 0` (512 episodes; log: `runs/stage1_scans/2025-12-15_eval_badsrc_big_seed0-4_evalseed0.txt`).
+- Aggregate across seeds 0..4: best_genome mean `mean_fitness=164.1002` (baseline greedy `153.7236`, baseline random `133.8994`).
+
 Interpretation (provisional):
 - At this larger budget, fixed-weight ES **beats the greedy-gradient baseline on held-out fitness** across 5 seeds in L0.2 harmful sources.
 - Consistent with the L0.2 spec warning, this improvement does **not** imply better avoidance: the evolved policies show **more bad arrivals** and **lower integrity minima** than the greedy baseline on the same held-out episode keys.
