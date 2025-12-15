@@ -1748,3 +1748,60 @@ Aggregate (computed from the three values above):
 Interpretation (provisional):
 - At this small budget (30×64×4 episodes), ES clears the random baseline on this hazard variant across seeds, but does not yet beat the greedy-gradient baseline on held-out evaluation.
 - The evolved policies appear to trade off **higher energy gained** with **lower survival time** (integrity loss from bad arrivals), suggesting we should consider (a) increasing ES budget, and/or (b) Stage 2 plasticity comparisons where within-life adaptation can respond to “bad arrival” events.
+
+---
+
+## 2025-12-15 — Stage 1 bigger budget: L0.2 harmful sources (no plasticity)
+
+Goal: re-run the same L0.2 harmful-sources variant with a larger ES budget and more seeds, and check whether fixed-weight evolution can surpass the gradient-greedy baseline on held-out episodes.
+
+Thesis grounding:
+- The L0.2 spec explicitly warns that in **non-depleting** L0.2, fitness gains can plausibly come even with increased hazard contact; avoidance should be measured (bad arrivals / integrity minima), not inferred from fitness alone (`thesis/12_IMPLEMENTATION_ENVIRONMENT_LADDER_SPEC.md`).
+
+Environment:
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--steps 128`
+
+ES (200 generations, pop 128, 8 episodes; seeds 0..4; log: `runs/stage1_scans/2025-12-15_es_badsrc_big_seed0-4.txt`):
+```bash
+uv run koki2 batch-evo-l0 \
+  --seed-start 0 --seed-count 5 \
+  --out-root runs/stage1_es_big --tag stage1_badsrc_g200_p128_ep8 \
+  --generations 200 --pop-size 128 --episodes 8 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --log-every 10
+```
+
+Observed output (best_fitness + out_dir):
+- seed 0: `best_fitness=181.9375`, `out_dir=runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed0`
+- seed 1: `best_fitness=183.1875`, `out_dir=runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed1`
+- seed 2: `best_fitness=181.3125`, `out_dir=runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed2`
+- seed 3: `best_fitness=180.8125`, `out_dir=runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed3`
+- seed 4: `best_fitness=180.6250`, `out_dir=runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed4`
+
+Held-out evaluation (512 episodes, fixed eval seed; log: `runs/stage1_scans/2025-12-15_eval_badsrc_big_seed0-4.txt`):
+```bash
+uv run koki2 eval-run --run-dir runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed0 --episodes 512 --seed 424242 --baseline-policy greedy
+uv run koki2 eval-run --run-dir runs/stage1_es_big/2025-12-15T1959242949320000_stage1_badsrc_g200_p128_ep8_seed0 --episodes 512 --seed 424242 --baseline-policy random
+```
+
+Observed (best genome; held-out `mean_fitness`, seeds 0..4):
+- seed 0: `162.3066`
+- seed 1: `163.0488`
+- seed 2: `166.0693`
+- seed 3: `163.6104`
+- seed 4: `166.3066`
+
+Aggregate across seeds 0..4 (computed from the five values above; same eval seed + episode keys):
+- best_genome: mean `mean_fitness=164.2683` (sample stdev `1.8143`)
+- baseline greedy: `mean_fitness=154.9092`
+- baseline random: `mean_fitness=133.9463`
+
+Other held-out metrics (mean across seeds 0..4; computed from `runs/stage1_scans/2025-12-15_eval_badsrc_big_seed0-4.txt`):
+- best_genome success_rate: mean `0.7292` (baseline greedy `0.533`, baseline random `0.309`)
+- best_genome mean_bad_arrivals: mean `1.3472` (baseline greedy `0.4492`, baseline random `0.9844`)
+- best_genome mean_integrity_min: mean `0.6632` (baseline greedy `0.8877`, baseline random `0.7539`)
+
+Interpretation (provisional):
+- At this larger budget, fixed-weight ES **beats the greedy-gradient baseline on held-out fitness** across 5 seeds in L0.2 harmful sources.
+- Consistent with the L0.2 spec warning, this improvement does **not** imply better avoidance: the evolved policies show **more bad arrivals** and **lower integrity minima** than the greedy baseline on the same held-out episode keys.

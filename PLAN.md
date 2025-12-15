@@ -166,9 +166,9 @@ Next dev tasks (incremental):
 
 Latest check (2025-12-15; see `WORK.md` for full commands/output):
 - L0.2 harmful sources variant: `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
-- ES budget: `--generations 30 --pop-size 64 --episodes 4` across seeds 0/1/2.
-- Held-out eval: `koki2 eval-run --episodes 256 --seed 424242`.
-- Observed: mean best-genome held-out `mean_fitness=148.5293` (baseline random `131.7891`, baseline greedy `154.4160`).
+- ES budget: `--generations 200 --pop-size 128 --episodes 8` across seeds 0..4.
+- Held-out eval: `koki2 eval-run --episodes 512 --seed 424242`.
+- Observed: mean best-genome held-out `mean_fitness=164.2683` (baseline random `133.9463`, baseline greedy `154.9092`).
 
 Acceptance checks:
 - Across ≥3 seeds, best fitness improves over initial/random baseline.
