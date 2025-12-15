@@ -160,9 +160,15 @@ Acceptance checks:
 Goal: reliable improvement over random baselines across seeds.
 
 Next dev tasks (incremental):
-- Add a multi-seed acceptance harness (ES vs baselines across ≥3 seeds) and record results in `WORK.md`.
-- Standardize evaluation to reduce misinterpretation: evaluate saved `best_genome.npz` on held-out episodes (e.g., 64/128) and report hazard metrics (bad arrivals, integrity minima), not just `best_fitness`.
+- Keep a repeatable multi-seed acceptance workflow (ES vs baselines across ≥3 seeds) and record results in `WORK.md`.
+- Standardize evaluation to reduce misinterpretation: evaluate saved `best_genome.npz` on held-out episodes (e.g., 64/128/256) and report hazard metrics (bad arrivals, integrity minima), not just `best_fitness`.
 - Add a throughput micro-benchmark (steps/sec) to detect regressions (local CPU).
+
+Latest check (2025-12-15; see `WORK.md` for full commands/output):
+- L0.2 harmful sources variant: `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- ES budget: `--generations 30 --pop-size 64 --episodes 4` across seeds 0/1/2.
+- Held-out eval: `koki2 eval-run --episodes 256 --seed 424242`.
+- Observed: mean best-genome held-out `mean_fitness=148.5293` (baseline random `131.7891`, baseline greedy `154.4160`).
 
 Acceptance checks:
 - Across ≥3 seeds, best fitness improves over initial/random baseline.

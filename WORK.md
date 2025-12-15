@@ -1684,3 +1684,67 @@ uv run python -c "import json; json.load(open('colab/koki2_colab.ipynb','r',enco
 uv run --python 3.10 --extra dev pytest
 uv run --python 3.12 --extra dev pytest
 ```
+
+---
+
+## 2025-12-15 — Stage 1 multi-seed check: L0.2 harmful sources (no plasticity)
+
+Goal: start a Stage 1 “across seeds” check on a non-trivial L0.2 variant (positive + negative sources via integrity loss), and standardize evaluation via `koki2 eval-run` on held-out episode keys.
+
+Environment:
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--steps 128`
+
+Baseline scan (seed 0, 256 episodes; log: `runs/stage1_scans/2025-12-15_baseline_scan.txt`):
+```bash
+uv run koki2 baseline-l0 --seed 0 --policy greedy --episodes 256 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25
+uv run koki2 baseline-l0 --seed 0 --policy random --episodes 256 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25
+uv run koki2 baseline-l0 --seed 0 --policy greedy --episodes 256 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 --good-only-gradient
+```
+
+Observed output:
+- greedy: `mean_fitness=153.8184`, `success_rate=0.512`, `mean_energy_gained=0.0232`, `mean_bad_arrivals=0.4766`, `mean_integrity_min=0.8809`
+- random: `mean_fitness=135.5723`, `success_rate=0.320`, `mean_t_alive=118.9`, `mean_energy_gained=0.0693`, `mean_bad_arrivals=0.9922`, `mean_integrity_min=0.7520`
+- greedy + `--good-only-gradient` (informative cue control): `mean_fitness=178.4805`, `success_rate=1.000`, `mean_bad_arrivals=0.3125`, `mean_integrity_min=0.9219`
+
+ES (no plasticity; 30 generations, pop 64, 4 episodes; log: `runs/stage1_scans/2025-12-15_es_badsrc_seed0-2.txt`):
+```bash
+uv run koki2 batch-evo-l0 \
+  --seed-start 0 --seed-count 3 \
+  --out-root runs/stage1_es --tag stage1_badsrc \
+  --generations 30 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --log-every 1
+```
+
+Observed output:
+- seed 0: `best_fitness=181.1250`, `out_dir=runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed0`
+- seed 1: `best_fitness=183.1250`, `out_dir=runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed1`
+- seed 2: `best_fitness=182.0000`, `out_dir=runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed2`
+
+Held-out evaluation (256 episodes, fixed eval seed; log: `runs/stage1_scans/2025-12-15_eval_badsrc_seed0-2.txt`):
+```bash
+uv run koki2 eval-run --run-dir runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed0 --episodes 256 --seed 424242 --baseline-policy greedy
+uv run koki2 eval-run --run-dir runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed0 --episodes 256 --seed 424242 --baseline-policy random
+
+uv run koki2 eval-run --run-dir runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed1 --episodes 256 --seed 424242 --baseline-policy greedy
+uv run koki2 eval-run --run-dir runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed1 --episodes 256 --seed 424242 --baseline-policy random
+
+uv run koki2 eval-run --run-dir runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed2 --episodes 256 --seed 424242 --baseline-policy greedy
+uv run koki2 eval-run --run-dir runs/stage1_es/2025-12-15T1938347374200000_stage1_badsrc_seed2 --episodes 256 --seed 424242 --baseline-policy random
+```
+
+Observed (best genome; mean_fitness):
+- seed 0: `153.4395` (baseline greedy `154.4160`, baseline random `131.7891`)
+- seed 1: `141.8105` (baseline greedy `154.4160`, baseline random `131.7891`)
+- seed 2: `150.3379` (baseline greedy `154.4160`, baseline random `131.7891`)
+
+Aggregate (computed from the three values above):
+- mean best_genome `mean_fitness=148.5293` (vs baseline random `131.7891`, vs baseline greedy `154.4160`)
+
+Interpretation (provisional):
+- At this small budget (30×64×4 episodes), ES clears the random baseline on this hazard variant across seeds, but does not yet beat the greedy-gradient baseline on held-out evaluation.
+- The evolved policies appear to trade off **higher energy gained** with **lower survival time** (integrity loss from bad arrivals), suggesting we should consider (a) increasing ES budget, and/or (b) Stage 2 plasticity comparisons where within-life adaptation can respond to “bad arrival” events.
