@@ -31,6 +31,9 @@ def test_baseline_rollouts_are_deterministic() -> None:
         assert float(jax.device_get(out1.fitness_scalar)) == float(jax.device_get(out2.fitness_scalar))
         assert int(jax.device_get(out1.t_alive)) == int(jax.device_get(out2.t_alive))
         assert float(jax.device_get(out1.energy_gained_total)) == float(jax.device_get(out2.energy_gained_total))
+        assert float(jax.device_get(out1.bad_arrivals_total)) == float(jax.device_get(out2.bad_arrivals_total))
+        assert float(jax.device_get(out1.integrity_lost_total)) == float(jax.device_get(out2.integrity_lost_total))
+        assert float(jax.device_get(out1.integrity_min)) == float(jax.device_get(out2.integrity_min))
         assert bool(jax.device_get(out1.success)) == bool(jax.device_get(out2.success))
 
 
@@ -53,4 +56,6 @@ def test_baseline_jit_matches_eager() -> None:
     eager = simulate_lifetime_baseline_greedy(env_spec, sim_cfg, rng, t_idx)
     jitted = jax.jit(simulate_lifetime_baseline_greedy)(env_spec, sim_cfg, rng, t_idx)
     assert float(jax.device_get(eager.fitness_scalar)) == float(jax.device_get(jitted.fitness_scalar))
-
+    assert float(jax.device_get(eager.bad_arrivals_total)) == float(jax.device_get(jitted.bad_arrivals_total))
+    assert float(jax.device_get(eager.integrity_lost_total)) == float(jax.device_get(jitted.integrity_lost_total))
+    assert float(jax.device_get(eager.integrity_min)) == float(jax.device_get(jitted.integrity_min))

@@ -61,6 +61,7 @@ def agent_step(
     # If plasticity is disabled, keep weights and traces unchanged.
     elig = jnp.where(params.plast_enabled, elig_next, state.elig)
     w = jnp.where(params.plast_enabled, w_next, state.w)
+    dw_applied = jnp.where(params.plast_enabled, dw, jnp.zeros_like(dw))
 
     logits = jnp.dot(spike, params.motor_w) + params.motor_b
     action = jnp.argmax(logits).astype(jnp.int32)
@@ -68,6 +69,6 @@ def agent_step(
     log = AgentLog(
         spike_rate=jnp.mean(spike),
         modulator=modulator,
-        mean_abs_dw=jnp.mean(jnp.abs(dw)),
+        mean_abs_dw=jnp.mean(jnp.abs(dw_applied)),
     )
     return AgentState(v=v, spike=spike, w=w, elig=elig), action, log

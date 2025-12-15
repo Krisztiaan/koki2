@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from koki2.evo.openai_es import run_openai_es
-from koki2.genome.direct import make_dev_config
+from koki2.genome.direct import DirectGenome, make_dev_config
 from koki2.ops.manifest import collect_manifest, write_manifest
 from koki2.ops.run_io import ensure_dir, utc_now_iso
 from koki2.sim.orchestrator import (
+    simulate_lifetime,
     simulate_lifetime_baseline_greedy,
     simulate_lifetime_baseline_random,
     simulate_lifetime_baseline_stay,
 )
-from koki2.types import ChemotaxisEnvSpec, ESConfig, EvalConfig, MVTConfig, SimConfig
+from koki2.types import ChemotaxisEnvSpec, ESConfig, EvalConfig, FitnessSummary, MVTConfig, SimConfig
 
 
 def _default_out_dir(tag: str, seed: int) -> Path:
@@ -42,6 +45,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Integrity loss applied when arriving on a harmful source (L0.2 variant).",
     )
     evo.add_argument(
+        "--good-only-gradient",
+        action="store_true",
+        default=False,
+        help="Make the gradient point only to good sources (L0.2 control; informative cue).",
+    )
+    evo.add_argument(
         "--deplete-sources",
         action="store_true",
         default=False,
@@ -54,6 +63,12 @@ def _build_parser() -> argparse.ArgumentParser:
     evo.add_argument("--energy-gain", type=float, default=0.05)
     evo.add_argument("--terminate-on-reach", action="store_true", default=False)
     evo.add_argument("--obs-noise", type=float, default=0.0)
+    evo.add_argument(
+        "--grad-dropout-p",
+        type=float,
+        default=0.0,
+        help="Probability of zeroing the gradient channels (L1.1 intermittent sensing).",
+    )
     evo.add_argument("--grad-gain-min", type=float, default=1.0)
     evo.add_argument("--grad-gain-max", type=float, default=1.0)
     evo.add_argument("--grad-gain-start-phi", type=float, default=0.0)
@@ -68,6 +83,9 @@ def _build_parser() -> argparse.ArgumentParser:
     evo.add_argument("--topology-seed", type=int, default=None)
     evo.add_argument("--theta", type=float, default=1.0)
     evo.add_argument("--tau-m", type=float, default=10.0)
+    evo.add_argument("--plast-enabled", action="store_true", default=False, help="Enable within-life plasticity (Stage 2).")
+    evo.add_argument("--plast-eta", type=float, default=0.0, help="Plasticity learning rate (only if --plast-enabled).")
+    evo.add_argument("--plast-lambda", type=float, default=0.9, help="Eligibility trace decay in [0, 1] (only if --plast-enabled).")
 
     evo.add_argument("--episodes", type=int, default=4)
     evo.add_argument("--pop-size", type=int, default=64)
@@ -97,6 +115,12 @@ def _build_parser() -> argparse.ArgumentParser:
     base.add_argument("--num-sources", type=int, default=1)
     base.add_argument("--num-bad-sources", type=int, default=0)
     base.add_argument("--bad-source-integrity-loss", type=float, default=0.0)
+    base.add_argument(
+        "--good-only-gradient",
+        action="store_true",
+        default=False,
+        help="Make the gradient point only to good sources (L0.2 control; informative cue).",
+    )
     base.add_argument("--deplete-sources", action="store_true", default=False)
     base.add_argument("--respawn-delay", type=int, default=0)
     base.add_argument("--steps", type=int, default=128)
@@ -105,6 +129,7 @@ def _build_parser() -> argparse.ArgumentParser:
     base.add_argument("--energy-gain", type=float, default=0.05)
     base.add_argument("--terminate-on-reach", action="store_true", default=False)
     base.add_argument("--obs-noise", type=float, default=0.0)
+    base.add_argument("--grad-dropout-p", type=float, default=0.0)
     base.add_argument("--grad-gain-min", type=float, default=1.0)
     base.add_argument("--grad-gain-max", type=float, default=1.0)
     base.add_argument("--grad-gain-start-phi", type=float, default=0.0)
@@ -117,6 +142,18 @@ def _build_parser() -> argparse.ArgumentParser:
     base.add_argument("--success-bonus", type=float, default=50.0)
     base.add_argument("--fitness-alpha", type=float, default=1.0)
     base.add_argument("--fitness-beta", type=float, default=10.0)
+
+    eval_run = sub.add_parser("eval-run", help="Evaluate a saved evo-l0 run directory on fresh episodes.")
+    eval_run.add_argument("--run-dir", type=str, required=True)
+    eval_run.add_argument("--seed", type=int, default=0, help="PRNG seed for evaluation episode keys.")
+    eval_run.add_argument("--episodes", type=int, default=64)
+    eval_run.add_argument(
+        "--baseline-policy",
+        type=str,
+        default="greedy",
+        choices=["greedy", "random", "stay", "none"],
+        help="Optionally evaluate a baseline policy on the same episode keys for comparison.",
+    )
     return p
 
 
@@ -138,6 +175,7 @@ def main(argv: list[str] | None = None) -> None:
             energy_gain=args.energy_gain,
             terminate_on_reach=args.terminate_on_reach,
             obs_noise=args.obs_noise,
+            grad_dropout_p=float(args.grad_dropout_p),
             grad_gain_min=args.grad_gain_min,
             grad_gain_max=args.grad_gain_max,
             grad_gain_start_phi=args.grad_gain_start_phi,
@@ -149,6 +187,7 @@ def main(argv: list[str] | None = None) -> None:
             num_sources=num_sources,
             num_bad_sources=num_bad_sources,
             bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+            good_only_gradient=bool(args.good_only_gradient),
             source_deplete=bool(args.deplete_sources),
             source_respawn_delay=max(int(args.respawn_delay), 0),
         )
@@ -160,7 +199,9 @@ def main(argv: list[str] | None = None) -> None:
             topology_seed=topology_seed,
             theta=args.theta,
             tau_m=args.tau_m,
-            plast_enabled=False,
+            plast_enabled=bool(args.plast_enabled),
+            plast_eta=max(float(args.plast_eta), 0.0),
+            plast_lambda=float(jnp.clip(jnp.array(args.plast_lambda, dtype=jnp.float32), 0.0, 1.0)),
         )
         sim_cfg = SimConfig(
             fitness_alpha=args.fitness_alpha,
@@ -229,6 +270,7 @@ def main(argv: list[str] | None = None) -> None:
             energy_gain=args.energy_gain,
             terminate_on_reach=args.terminate_on_reach,
             obs_noise=args.obs_noise,
+            grad_dropout_p=float(args.grad_dropout_p),
             grad_gain_min=args.grad_gain_min,
             grad_gain_max=args.grad_gain_max,
             grad_gain_start_phi=args.grad_gain_start_phi,
@@ -240,6 +282,7 @@ def main(argv: list[str] | None = None) -> None:
             num_sources=num_sources,
             num_bad_sources=num_bad_sources,
             bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+            good_only_gradient=bool(args.good_only_gradient),
             source_deplete=bool(args.deplete_sources),
             source_respawn_delay=max(int(args.respawn_delay), 0),
         )
@@ -264,8 +307,12 @@ def main(argv: list[str] | None = None) -> None:
         succ_rate = float(jax.device_get(jnp.mean(outs.success.astype(jnp.float32))))
         mean_alive = float(jax.device_get(jnp.mean(outs.t_alive.astype(jnp.float32))))
         mean_gain = float(jax.device_get(jnp.mean(outs.energy_gained_total)))
+        mean_bad = float(jax.device_get(jnp.mean(outs.bad_arrivals_total)))
+        mean_ilost = float(jax.device_get(jnp.mean(outs.integrity_lost_total)))
+        mean_imin = float(jax.device_get(jnp.mean(outs.integrity_min)))
         mean_ent = float(jax.device_get(jnp.mean(outs.action_entropy)))
         mean_mode = float(jax.device_get(jnp.mean(outs.action_mode_frac)))
+        mean_dw = float(jax.device_get(jnp.mean(outs.mean_abs_dw_mean)))
 
         print(
             "baseline_l0"
@@ -275,9 +322,102 @@ def main(argv: list[str] | None = None) -> None:
             f" success_rate={succ_rate:.3f}"
             f" mean_t_alive={mean_alive:.1f}"
             f" mean_energy_gained={mean_gain:.4f}"
+            f" mean_bad_arrivals={mean_bad:.4f}"
+            f" mean_integrity_lost={mean_ilost:.4f}"
+            f" mean_integrity_min={mean_imin:.4f}"
             f" mean_action_entropy={mean_ent:.4f}"
             f" mean_action_mode_frac={mean_mode:.3f}"
+            f" mean_abs_dw_mean={mean_dw:.6f}"
         )
+        return
+
+    if args.cmd == "eval-run":
+        run_dir = Path(args.run_dir)
+        manifest_path = run_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise SystemExit(f"missing manifest.json in run dir: {run_dir}")
+
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        cfg = manifest.get("config", {})
+        if not isinstance(cfg, dict):
+            raise SystemExit(f"invalid manifest config in: {manifest_path}")
+
+        env_spec = ChemotaxisEnvSpec(**cfg["env_spec"])
+        sim_cfg = SimConfig(**cfg["sim_cfg"])
+
+        dev = cfg["dev_cfg"]
+        n = int(dev["n_neurons"])
+        edge_shape = tuple(dev["edge_index_shape"])
+        e = int(edge_shape[0])
+        if e % max(n, 1) != 0:
+            raise SystemExit(f"cannot infer k_edges_per_neuron from edge_index_shape={edge_shape} n_neurons={n}")
+        k_edges = e // max(n, 1)
+        dev_cfg = make_dev_config(
+            n_neurons=n,
+            obs_dim=int(dev["obs_dim"]),
+            num_actions=int(dev["num_actions"]),
+            k_edges_per_neuron=int(k_edges),
+            topology_seed=int(dev["topology_seed"]),
+            theta=float(dev["theta"]),
+            tau_m=float(dev["tau_m"]),
+            plast_enabled=bool(dev["plast_enabled"]),
+            plast_eta=float(dev["plast_eta"]),
+            plast_lambda=float(dev["plast_lambda"]),
+        )
+
+        data_path = run_dir / "best_genome.npz"
+        if not data_path.exists():
+            raise SystemExit(f"missing best_genome.npz in run dir: {run_dir}")
+        data = np.load(data_path)
+        genome = DirectGenome(
+            obs_w=jnp.asarray(data["obs_w"]),
+            rec_w=jnp.asarray(data["rec_w"]),
+            motor_w=jnp.asarray(data["motor_w"]),
+            motor_b=jnp.asarray(data["motor_b"]),
+            mod_w=jnp.asarray(data["mod_w"]),
+        )
+
+        keys = jax.random.split(jax.random.PRNGKey(args.seed), args.episodes)
+        t_idx = jnp.arange(env_spec.max_steps, dtype=jnp.int32)
+        outs = jax.vmap(lambda k: simulate_lifetime(genome, env_spec, dev_cfg, sim_cfg, k, t_idx))(keys)
+
+        def _summ(tag: str, out: FitnessSummary) -> None:
+            mean_fit = float(jax.device_get(jnp.mean(out.fitness_scalar)))
+            succ_rate = float(jax.device_get(jnp.mean(out.success.astype(jnp.float32))))
+            mean_alive = float(jax.device_get(jnp.mean(out.t_alive.astype(jnp.float32))))
+            mean_gain = float(jax.device_get(jnp.mean(out.energy_gained_total)))
+            mean_bad = float(jax.device_get(jnp.mean(out.bad_arrivals_total)))
+            mean_ilost = float(jax.device_get(jnp.mean(out.integrity_lost_total)))
+            mean_imin = float(jax.device_get(jnp.mean(out.integrity_min)))
+            mean_ent = float(jax.device_get(jnp.mean(out.action_entropy)))
+            mean_mode = float(jax.device_get(jnp.mean(out.action_mode_frac)))
+            mean_dw = float(jax.device_get(jnp.mean(out.mean_abs_dw_mean)))
+            print(
+                f"{tag}"
+                f" episodes={args.episodes}"
+                f" mean_fitness={mean_fit:.4f}"
+                f" success_rate={succ_rate:.3f}"
+                f" mean_t_alive={mean_alive:.1f}"
+                f" mean_energy_gained={mean_gain:.4f}"
+                f" mean_bad_arrivals={mean_bad:.4f}"
+                f" mean_integrity_lost={mean_ilost:.4f}"
+                f" mean_integrity_min={mean_imin:.4f}"
+                f" mean_action_entropy={mean_ent:.4f}"
+                f" mean_action_mode_frac={mean_mode:.3f}"
+                f" mean_abs_dw_mean={mean_dw:.6f}"
+            )
+
+        print(f"eval_run run_dir={run_dir} eval_seed={args.seed}")
+        _summ("best_genome", outs)
+
+        if args.baseline_policy != "none":
+            sim_fn = {
+                "greedy": simulate_lifetime_baseline_greedy,
+                "random": simulate_lifetime_baseline_random,
+                "stay": simulate_lifetime_baseline_stay,
+            }[args.baseline_policy]
+            base_outs = jax.vmap(lambda k: sim_fn(env_spec, sim_cfg, k, t_idx))(keys)
+            _summ(f"baseline_l0 policy={args.baseline_policy}", base_outs)
         return
 
     raise SystemExit(f"unknown cmd: {args.cmd}")

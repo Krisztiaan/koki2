@@ -30,20 +30,22 @@ Notes:
 
 ## 1. Current status (snapshot)
 
-Implemented (verified by unit tests):
-- Stage 0: deterministic rollouts + JIT sanity tests (`tests/test_stage0_determinism.py`)
-- Stage 1: L0 chemotaxis env suite + baseline harness + minimal OpenAI-ES loop (`koki2 evo-l0`, `koki2 baseline-l0`)
-  - L0.2: multi-source support (`--num-sources`)
-  - L0.2 variant: positive+negative sources via integrity loss (`--num-bad-sources`, `--bad-source-integrity-loss`)
-  - L1.0: optional deplete/respawn temporal structure (`--deplete-sources`, `--respawn-delay`)
-- Stage 4 (partial): nursing sub-mechanism for **developmental sensory gating + resolution** in L0 (`src/koki2/envs/chemotaxis.py`, `src/koki2/nursing/schedules.py`)
-- Stage 5 (partial): **MVT viability filtering** for ES (action entropy + alive steps + energy gained) (`src/koki2/evo/openai_es.py`)
+	Implemented (verified by unit tests):
+	- Stage 0: deterministic rollouts + JIT sanity tests (`tests/test_stage0_determinism.py`)
+		- Stage 1: L0 chemotaxis env suite + baseline harness + minimal OpenAI-ES loop (`koki2 evo-l0`, `koki2 baseline-l0`)
+		  - L0.2: multi-source support (`--num-sources`)
+		  - L0.2 variant: positive+negative sources via integrity loss (`--num-bad-sources`, `--bad-source-integrity-loss`)
+		  - L1.0: optional deplete/respawn temporal structure (`--deplete-sources`, `--respawn-delay`)
+		  - L1.1 (partial): intermittent gradient sensing via `--grad-dropout-p` (no shape changes)
+		  - Evaluation: `koki2 eval-run` (evaluate `best_genome.npz` on held-out episodes + compare to baselines)
+	- Stage 4 (partial): nursing sub-mechanism for **developmental sensory gating + resolution** in L0 (`src/koki2/envs/chemotaxis.py`, `src/koki2/nursing/schedules.py`)
+	- Stage 5 (partial): **MVT viability filtering** for ES (action entropy + alive steps + energy gained) (`src/koki2/evo/openai_es.py`)
 
-Not implemented yet (planned):
-- Plasticity-enabled agents (eligibility traces, modulators) and comparisons (Stage 2)
-- CPPN/rule genome compiler + bottleneck scaling experiments (Stage 3)
-- L1+ environments beyond L1.0 (noisy/intermittent sensing, obstacles) and the full L2/L3 ladder (homeostasis, threats) (Stages 2,6,7 depend on these)
-- Multi-fidelity rungs beyond MVT + novelty safeguards (Stage 5)
+	Not implemented yet (planned):
+	- Plasticity-enabled agents (eligibility traces, modulators) and comparisons (Stage 2)
+	- CPPN/rule genome compiler + bottleneck scaling experiments (Stage 3)
+	- L1+ environments beyond L1.1 (obstacles, richer partial observability) and the full L2/L3 ladder (homeostasis, threats) (Stages 2,6,7 depend on these)
+	- Multi-fidelity rungs beyond MVT + novelty safeguards (Stage 5)
 
 ---
 
@@ -65,11 +67,19 @@ uv run koki2 baseline-l0 --policy stay --episodes 32
 uv run koki2 evo-l0 --generations 5 --pop-size 64 --steps 128
 ```
 
-Artifacts:
-- `runs/<timestamp>_evo-l0_seed<seed>/config.json`
-- `runs/<timestamp>_evo-l0_seed<seed>/generations.jsonl`
-- `runs/<timestamp>_evo-l0_seed<seed>/best_genome.npz`
-- `runs/<timestamp>_evo-l0_seed<seed>/manifest.json`
+	Artifacts:
+	- `runs/<timestamp>_evo-l0_seed<seed>/config.json`
+	- `runs/<timestamp>_evo-l0_seed<seed>/generations.jsonl`
+	- `runs/<timestamp>_evo-l0_seed<seed>/best_genome.npz`
+	- `runs/<timestamp>_evo-l0_seed<seed>/manifest.json`
+
+### 2.1.1 Evaluate a saved run directory (recommended)
+
+ES reports `best_fitness` on its small training objective (`--episodes`, often 4). For interpretation and comparisons, evaluate the saved `best_genome.npz` on more episodes and report hazard metrics too:
+
+```bash
+uv run koki2 eval-run --run-dir runs/<timestamp>_evo-l0_seed<seed> --episodes 64 --seed 0 --baseline-policy greedy
+```
 
 ### 2.2 Sensory gating experiments (L0)
 
@@ -100,12 +110,25 @@ uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
   --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25
 ```
 
-Deplete/respawn (temporal structure):
+Control: make the gradient point only to good sources (informative cue; removes consequence-driven discrimination pressure):
 
 ```bash
 uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
-  --deplete-sources --respawn-delay 4
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 --good-only-gradient
 ```
+
+	Deplete/respawn (temporal structure):
+
+	```bash
+	uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
+	  --deplete-sources --respawn-delay 4
+	```
+
+	Intermittent gradient (partial observability; L1.1):
+
+	```bash
+	uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 --grad-dropout-p 0.5
+	```
 
 ---
 
@@ -125,6 +148,7 @@ Goal: reliable improvement over random baselines across seeds.
 
 Next dev tasks (incremental):
 - Add a multi-seed acceptance harness (ES vs baselines across ≥3 seeds) and record results in `WORK.md`.
+- Standardize evaluation to reduce misinterpretation: evaluate saved `best_genome.npz` on held-out episodes (e.g., 64/128) and report hazard metrics (bad arrivals, integrity minima), not just `best_fitness`.
 - Add a throughput micro-benchmark (steps/sec) to detect regressions (local CPU).
 
 Acceptance checks:
@@ -136,9 +160,9 @@ Acceptance checks:
 Goal: demonstrate that within-life plasticity helps in L1 (noise/depletion/partial observability).
 
 Dev tasks:
-- Implement eligibility traces + modulatory channels in `src/koki2/agent/snn.py` (or a new plastic agent module).
-- Add `plast_enabled=True` development configs and unit tests for stability (`isfinite`, boundedness).
-- Implement L1 tasks beyond deplete/respawn: noisy gradients, intermittent observations (partial observability), and/or simple obstacles.
+- Expose plasticity knobs on the CLI (`--plast-enabled`, `--plast-eta`, `--plast-lambda`) and ensure they are recorded in manifests for replay.
+- Add focused unit tests for plasticity gating (disabled ⇒ no weight/trace updates; enabled ⇒ bounded updates) and rollout stability (`isfinite`).
+- Pre-register a small comparison protocol: fixed compute budget, multi-seed ES runs with/without plasticity on L1.0/L1.1 variants; evaluate saved `best_genome.npz` via `koki2 eval-run` on held-out episodes.
 
 Acceptance checks:
 - Plastic agents outperform fixed-weight agents on L1 across seeds (pre-registered metrics).
@@ -214,6 +238,6 @@ Primary metrics:
 
 ## 6. Open questions to resolve with you (before next implementation sprint)
 
-1. For L0.2 positive+negative: should the gradient point to the nearest source (good or bad), or only the nearest *good* source?
+1. For L0.2 positive+negative: should we add an explicit “hazard smell” channel (nursing-scheduled cue strength), or keep valence ambiguity until L1.1?
 2. Do we want sensory gating to remain an **environment-side nursing** factor only, or also become an **agent-evolvable developmental program** (genome controls schedule parameters)?
 3. Next L1 pressure to prioritize: observation noise/intermittency, or simple obstacles?

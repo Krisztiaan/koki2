@@ -52,10 +52,14 @@ def simulate_lifetime(
     drive_prev = drive(internal, sim_cfg)
     alive = jnp.array(True, dtype=jnp.bool_)
     energy_gained_total = jnp.array(0.0, dtype=jnp.float32)
+    bad_arrivals_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_lost_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_min = internal.integrity
     t_alive = jnp.array(0, dtype=jnp.int32)
     success = jnp.array(False, dtype=jnp.bool_)
     num_actions = params.motor_b.shape[0]
     action_counts = jnp.zeros((num_actions,), dtype=jnp.float32)
+    dw_sum = jnp.array(0.0, dtype=jnp.float32)
 
     init = (
         env_state,
@@ -65,9 +69,13 @@ def simulate_lifetime(
         drive_prev,
         alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
+        dw_sum,
     )
 
     def step(carry, t):
@@ -79,9 +87,13 @@ def simulate_lifetime(
             drive_prev,
             alive,
             energy_gained_total,
+            bad_arrivals_total,
+            integrity_lost_total,
+            integrity_min,
             t_alive,
             success,
             action_counts,
+            dw_sum,
         ) = carry
 
         dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
@@ -99,10 +111,14 @@ def simulate_lifetime(
             _reward = drive_prev - drive2
 
             energy_gained_total2 = energy_gained_total + env_log.energy_gained
+            bad_arrivals_total2 = bad_arrivals_total + env_log.bad_arrivals
+            integrity_lost_total2 = integrity_lost_total + env_log.integrity_lost
+            integrity_min2 = jnp.minimum(integrity_min, internal2.integrity)
             t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
             action_counts2 = action_counts.at[action].add(jnp.array(1.0, dtype=jnp.float32))
+            dw_sum2 = dw_sum + agent_log.mean_abs_dw
 
             return (
                 (
@@ -113,9 +129,13 @@ def simulate_lifetime(
                     drive2,
                     alive2,
                     energy_gained_total2,
+                    bad_arrivals_total2,
+                    integrity_lost_total2,
+                    integrity_min2,
                     t_alive2,
                     success2,
                     action_counts2,
+                    dw_sum2,
                 ),
                 (agent_log, env_log, _reward),
             )
@@ -129,6 +149,8 @@ def simulate_lifetime(
             zero_env_log = EnvLog(
                 reached_source=jnp.array(False, dtype=jnp.bool_),
                 energy_gained=jnp.array(0.0, dtype=jnp.float32),
+                bad_arrivals=jnp.array(0.0, dtype=jnp.float32),
+                integrity_lost=jnp.array(0.0, dtype=jnp.float32),
             )
             return (
                 (
@@ -139,9 +161,13 @@ def simulate_lifetime(
                     drive_prev,
                     alive,
                     energy_gained_total,
+                    bad_arrivals_total,
+                    integrity_lost_total,
+                    integrity_min,
                     t_alive,
                     success,
                     action_counts,
+                    dw_sum,
                 ),
                 (zero_agent_log, zero_env_log, jnp.array(0.0, dtype=jnp.float32)),
             )
@@ -158,15 +184,20 @@ def simulate_lifetime(
         _drive_prev,
         _alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
+        dw_sum,
     ) = final
 
     safe_steps = jnp.maximum(t_alive.astype(jnp.float32), jnp.array(1.0, dtype=jnp.float32))
     p = action_counts / safe_steps
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
+    mean_abs_dw_mean = dw_sum / safe_steps
 
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
@@ -177,9 +208,13 @@ def simulate_lifetime(
         fitness_scalar=fitness,
         t_alive=t_alive,
         energy_gained_total=energy_gained_total,
+        integrity_min=integrity_min,
+        bad_arrivals_total=bad_arrivals_total,
+        integrity_lost_total=integrity_lost_total,
         success=success,
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
+        mean_abs_dw_mean=mean_abs_dw_mean,
     )
 
 
@@ -196,6 +231,9 @@ def simulate_lifetime_baseline_greedy(
     drive_prev = drive(internal, sim_cfg)
     alive = jnp.array(True, dtype=jnp.bool_)
     energy_gained_total = jnp.array(0.0, dtype=jnp.float32)
+    bad_arrivals_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_lost_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_min = internal.integrity
     t_alive = jnp.array(0, dtype=jnp.int32)
     success = jnp.array(False, dtype=jnp.bool_)
     num_actions = 5
@@ -208,6 +246,9 @@ def simulate_lifetime_baseline_greedy(
         drive_prev,
         alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
@@ -221,6 +262,9 @@ def simulate_lifetime_baseline_greedy(
             drive_prev,
             alive,
             energy_gained_total,
+            bad_arrivals_total,
+            integrity_lost_total,
+            integrity_min,
             t_alive,
             success,
             action_counts,
@@ -236,6 +280,9 @@ def simulate_lifetime_baseline_greedy(
             )
             drive2 = drive(internal2, sim_cfg)
             energy_gained_total2 = energy_gained_total + env_log.energy_gained
+            bad_arrivals_total2 = bad_arrivals_total + env_log.bad_arrivals
+            integrity_lost_total2 = integrity_lost_total + env_log.integrity_lost
+            integrity_min2 = jnp.minimum(integrity_min, internal2.integrity)
             t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
@@ -247,6 +294,9 @@ def simulate_lifetime_baseline_greedy(
                 drive2,
                 alive2,
                 energy_gained_total2,
+                bad_arrivals_total2,
+                integrity_lost_total2,
+                integrity_min2,
                 t_alive2,
                 success2,
                 action_counts2,
@@ -266,6 +316,9 @@ def simulate_lifetime_baseline_greedy(
         _drive_prev,
         _alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
@@ -275,6 +328,7 @@ def simulate_lifetime_baseline_greedy(
     p = action_counts / safe_steps
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
+    mean_abs_dw_mean = jnp.array(0.0, dtype=jnp.float32)
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
         + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
@@ -284,9 +338,13 @@ def simulate_lifetime_baseline_greedy(
         fitness_scalar=fitness,
         t_alive=t_alive,
         energy_gained_total=energy_gained_total,
+        integrity_min=integrity_min,
+        bad_arrivals_total=bad_arrivals_total,
+        integrity_lost_total=integrity_lost_total,
         success=success,
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
+        mean_abs_dw_mean=mean_abs_dw_mean,
     )
 
 
@@ -303,6 +361,9 @@ def simulate_lifetime_baseline_random(
     drive_prev = drive(internal, sim_cfg)
     alive = jnp.array(True, dtype=jnp.bool_)
     energy_gained_total = jnp.array(0.0, dtype=jnp.float32)
+    bad_arrivals_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_lost_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_min = internal.integrity
     t_alive = jnp.array(0, dtype=jnp.int32)
     success = jnp.array(False, dtype=jnp.bool_)
     num_actions = 5
@@ -315,6 +376,9 @@ def simulate_lifetime_baseline_random(
         drive_prev,
         alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
@@ -328,6 +392,9 @@ def simulate_lifetime_baseline_random(
             drive_prev,
             alive,
             energy_gained_total,
+            bad_arrivals_total,
+            integrity_lost_total,
+            integrity_min,
             t_alive,
             success,
             action_counts,
@@ -342,6 +409,9 @@ def simulate_lifetime_baseline_random(
             env_state2, obs2, internal2, env_log, done = env_step(env_spec, env_state, action, dev_state, rng_env)
             drive2 = drive(internal2, sim_cfg)
             energy_gained_total2 = energy_gained_total + env_log.energy_gained
+            bad_arrivals_total2 = bad_arrivals_total + env_log.bad_arrivals
+            integrity_lost_total2 = integrity_lost_total + env_log.integrity_lost
+            integrity_min2 = jnp.minimum(integrity_min, internal2.integrity)
             t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
@@ -353,6 +423,9 @@ def simulate_lifetime_baseline_random(
                 drive2,
                 alive2,
                 energy_gained_total2,
+                bad_arrivals_total2,
+                integrity_lost_total2,
+                integrity_min2,
                 t_alive2,
                 success2,
                 action_counts2,
@@ -372,6 +445,9 @@ def simulate_lifetime_baseline_random(
         _drive_prev,
         _alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
@@ -381,6 +457,7 @@ def simulate_lifetime_baseline_random(
     p = action_counts / safe_steps
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
+    mean_abs_dw_mean = jnp.array(0.0, dtype=jnp.float32)
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
         + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
@@ -390,9 +467,13 @@ def simulate_lifetime_baseline_random(
         fitness_scalar=fitness,
         t_alive=t_alive,
         energy_gained_total=energy_gained_total,
+        integrity_min=integrity_min,
+        bad_arrivals_total=bad_arrivals_total,
+        integrity_lost_total=integrity_lost_total,
         success=success,
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
+        mean_abs_dw_mean=mean_abs_dw_mean,
     )
 
 
@@ -409,6 +490,9 @@ def simulate_lifetime_baseline_stay(
     drive_prev = drive(internal, sim_cfg)
     alive = jnp.array(True, dtype=jnp.bool_)
     energy_gained_total = jnp.array(0.0, dtype=jnp.float32)
+    bad_arrivals_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_lost_total = jnp.array(0.0, dtype=jnp.float32)
+    integrity_min = internal.integrity
     t_alive = jnp.array(0, dtype=jnp.int32)
     success = jnp.array(False, dtype=jnp.bool_)
     num_actions = 5
@@ -422,6 +506,9 @@ def simulate_lifetime_baseline_stay(
         drive_prev,
         alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
@@ -435,6 +522,9 @@ def simulate_lifetime_baseline_stay(
             drive_prev,
             alive,
             energy_gained_total,
+            bad_arrivals_total,
+            integrity_lost_total,
+            integrity_min,
             t_alive,
             success,
             action_counts,
@@ -447,6 +537,9 @@ def simulate_lifetime_baseline_stay(
             env_state2, obs2, internal2, env_log, done = env_step(env_spec, env_state, action, dev_state, step_key)
             drive2 = drive(internal2, sim_cfg)
             energy_gained_total2 = energy_gained_total + env_log.energy_gained
+            bad_arrivals_total2 = bad_arrivals_total + env_log.bad_arrivals
+            integrity_lost_total2 = integrity_lost_total + env_log.integrity_lost
+            integrity_min2 = jnp.minimum(integrity_min, internal2.integrity)
             t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
@@ -458,6 +551,9 @@ def simulate_lifetime_baseline_stay(
                 drive2,
                 alive2,
                 energy_gained_total2,
+                bad_arrivals_total2,
+                integrity_lost_total2,
+                integrity_min2,
                 t_alive2,
                 success2,
                 action_counts2,
@@ -477,6 +573,9 @@ def simulate_lifetime_baseline_stay(
         _drive_prev,
         _alive,
         energy_gained_total,
+        bad_arrivals_total,
+        integrity_lost_total,
+        integrity_min,
         t_alive,
         success,
         action_counts,
@@ -486,6 +585,7 @@ def simulate_lifetime_baseline_stay(
     p = action_counts / safe_steps
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
+    mean_abs_dw_mean = jnp.array(0.0, dtype=jnp.float32)
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
         + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
@@ -495,7 +595,11 @@ def simulate_lifetime_baseline_stay(
         fitness_scalar=fitness,
         t_alive=t_alive,
         energy_gained_total=energy_gained_total,
+        integrity_min=integrity_min,
+        bad_arrivals_total=bad_arrivals_total,
+        integrity_lost_total=integrity_lost_total,
         success=success,
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
+        mean_abs_dw_mean=mean_abs_dw_mean,
     )

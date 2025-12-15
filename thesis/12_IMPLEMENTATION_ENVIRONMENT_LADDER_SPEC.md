@@ -80,10 +80,17 @@ Key measurements:
 ### L0.2: Multiple sources (positive and negative)
 
 - some sources increase energy, others decrease integrity
-- forces basic discrimination through action consequences
+- pressures basic discrimination and/or risk-sensitive behavior through action consequences
 
-Hypothesis:
-- agents begin to show avoidance behavior driven by integrity preservation.
+Observation semantics (important for interpretability and stage-gating):
+
+- **Default (inside-out aligned):** sources share the same exteroceptive cue (a single “source gradient”), so *valence is not directly observable*. Agents must infer “good vs bad” from **action consequences** via interoception (energy/integrity changes). This matches the inside-out commitment that objects can be perceptually ambiguous but differ in viability consequences.
+- **Ablation/control:** allow a “good-only” cue (gradient points only to good sources) to separate *perception difficulty* from other factors. This is useful as a sanity control and for baselines, but it weakens the “discrimination via consequences” pressure.
+- **Intermediate cue (future):** add a weak “hazard smell” **within the existing gradient channels** (e.g., an attraction/repulsion mixture field) and treat cue strength as a **nursing-scheduled** knob, so we can sweep from ambiguous → informative without changing tensor shapes.
+
+Hypotheses (operationalized; to avoid narrative drift):
+- Treat “avoidance” as a measured outcome (e.g., bad-source arrivals and integrity minima), not inferred from fitness alone.
+- Expect temporal structure (L1.0+) to amplify survival-weighted strategies; in non-deplete L0.2, fitness gains can plausibly come from energy-harvesting patterns even with increased hazard contact.
 
 ---
 

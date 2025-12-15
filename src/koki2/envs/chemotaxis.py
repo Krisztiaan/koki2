@@ -19,13 +19,16 @@ def _observe(
 ) -> Array:
     sources = state.source_pos.astype(jnp.float32)  # (K, 2)
     active = state.source_active.astype(jnp.bool_)  # (K,)
+    good_only = jnp.asarray(spec.good_only_gradient, dtype=jnp.bool_)
+    good_mask = jnp.logical_and(active, jnp.logical_not(state.source_is_bad.astype(jnp.bool_)))
+    mask = jnp.where(good_only, good_mask, active)
     pos = state.pos.astype(jnp.float32)  # (2,)
     diffs = sources - pos[None, :]  # (K, 2)
     dist2 = jnp.sum(diffs * diffs, axis=1)  # (K,)
-    dist2 = jnp.where(active, dist2, jnp.array(jnp.inf, dtype=jnp.float32))
+    dist2 = jnp.where(mask, dist2, jnp.array(jnp.inf, dtype=jnp.float32))
     nearest = jnp.argmin(dist2)
     diff = diffs[nearest]
-    diff = jnp.where(jnp.any(active), diff, jnp.zeros_like(diff))
+    diff = jnp.where(jnp.any(mask), diff, jnp.zeros_like(diff))
     width = jnp.asarray(spec.width, dtype=jnp.float32)
     height = jnp.asarray(spec.height, dtype=jnp.float32)
     scale = jnp.stack([jnp.maximum(width - 1.0, 1.0), jnp.maximum(height - 1.0, 1.0)], axis=0)
@@ -41,6 +44,12 @@ def _observe(
     )
     grad = grad * grad_gain
 
+    rng_mask, rng_noise = jax.random.split(rng, 2)
+    drop_p = jnp.asarray(spec.grad_dropout_p, dtype=jnp.float32)
+    drop_p = jnp.clip(drop_p, 0.0, 1.0)
+    keep = jax.random.bernoulli(rng_mask, p=1.0 - drop_p)
+    grad = jnp.where(keep, grad, jnp.zeros_like(grad))
+
     obs = jnp.concatenate(
         [
             grad,
@@ -49,7 +58,7 @@ def _observe(
         axis=0,
     )
     obs = obs + jnp.asarray(spec.obs_noise, dtype=jnp.float32) * jax.random.normal(
-        rng, obs.shape, dtype=jnp.float32
+        rng_noise, obs.shape, dtype=jnp.float32
     )
     return obs
 
@@ -148,6 +157,7 @@ def env_step(
     arrived_good = arrived & jnp.logical_not(state.source_is_bad)
     arrived_bad = arrived & state.source_is_bad
     num_good = jnp.sum(arrived_good.astype(jnp.float32))
+    num_bad = jnp.sum(arrived_bad.astype(jnp.float32))
     energy_gained = jnp.asarray(spec.energy_gain, dtype=jnp.float32) * num_good
 
     if spec.source_deplete:
@@ -187,13 +197,19 @@ def env_step(
         state.energy - jnp.asarray(spec.energy_decay, dtype=jnp.float32) + energy_gained, 0.0, 1.0
     )
     bad_loss = jnp.asarray(spec.bad_source_integrity_loss, dtype=jnp.float32)
+    integrity_lost = bad_loss * num_bad
     integrity = jnp.clip(
-        state.integrity - bad_loss * jnp.sum(arrived_bad.astype(jnp.float32)), 0.0, 1.0
+        state.integrity - integrity_lost, 0.0, 1.0
     )
     internal = InternalState(energy=energy, integrity=integrity)
     state = state._replace(energy=energy, integrity=integrity)
 
-    env_log = EnvLog(reached_source=reached, energy_gained=energy_gained)
+    env_log = EnvLog(
+        reached_source=reached,
+        energy_gained=energy_gained,
+        bad_arrivals=num_bad,
+        integrity_lost=integrity_lost,
+    )
     done = jnp.logical_or(state.t >= spec.max_steps, jnp.logical_or(energy <= 0.0, integrity <= 0.0))
     terminate = jnp.asarray(spec.terminate_on_reach, dtype=jnp.bool_)
     done = jnp.logical_or(done, jnp.logical_and(terminate, reached))

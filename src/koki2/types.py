@@ -26,6 +26,7 @@ class ChemotaxisEnvSpec(NamedTuple):
     energy_gain: float
     terminate_on_reach: bool
     obs_noise: float = 0.0
+    grad_dropout_p: float = 0.0
 
     # Developmental “nursing” hooks (sensory gating / resolution).
     #
@@ -51,6 +52,10 @@ class ChemotaxisEnvSpec(NamedTuple):
     # The agent cannot distinguish source types from the gradient signal alone.
     num_bad_sources: int = 0
     bad_source_integrity_loss: float = 0.0
+
+    # L0.2 cue ablation: when enabled, the gradient points only to good (non-harmful) sources.
+    # This is a control condition that removes consequence-driven valence discrimination pressure.
+    good_only_gradient: bool = False
 
     # L1.0: depleting/respawning sources (temporal structure).
     #
@@ -94,6 +99,8 @@ jax.tree_util.register_pytree_node(  # type: ignore[attr-defined]
 class EnvLog(NamedTuple):
     reached_source: Array  # bool scalar
     energy_gained: Array  # float32 scalar
+    bad_arrivals: Array  # float32 scalar (count)
+    integrity_lost: Array  # float32 scalar
 
 
 class DevConfig(NamedTuple):
@@ -151,9 +158,13 @@ class FitnessSummary(NamedTuple):
     fitness_scalar: Array
     t_alive: Array
     energy_gained_total: Array
+    integrity_min: Array
+    bad_arrivals_total: Array
+    integrity_lost_total: Array
     success: Array
     action_entropy: Array
     action_mode_frac: Array
+    mean_abs_dw_mean: Array
 
 
 class MVTConfig(NamedTuple):

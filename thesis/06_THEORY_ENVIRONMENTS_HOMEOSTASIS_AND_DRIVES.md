@@ -116,6 +116,15 @@ Observations are decomposed into:
 3. **Efference copy** (optional):
    - previous action or motor command.
 
+#### 4.1.1 Cue informationality (valence ambiguity)
+
+A recurring design axis in this thesis is **how much the exteroceptive cue reveals about outcome valence** (e.g., “food vs poison”):
+
+- **Ambiguous cues (preferred early for inside-out tests):** objects share the same outward cue, and “meaning” is learned via action consequences for viability. This operationalizes the inside-out stance: consequences calibrate internal dynamics.
+- **Informative cues (useful controls):** hazards have explicit cues (separate hazard gradients/cues). These variants are valuable as sanity checks and ablations, but they reduce the demand for consequence-driven discrimination.
+
+We treat cue informationality as a controlled knob (often nursing-scheduled) rather than a hidden confound, so we can attribute performance changes to memory/plasticity vs sensor informativeness.
+
 ### 4.2 Action space
 
 Keep early levels simple:
