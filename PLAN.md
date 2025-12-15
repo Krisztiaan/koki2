@@ -162,6 +162,7 @@ Goal: demonstrate that within-life plasticity helps in L1 (noise/depletion/parti
 Dev tasks:
 - Expose plasticity knobs on the CLI (`--plast-enabled`, `--plast-eta`, `--plast-lambda`) and ensure they are recorded in manifests for replay.
 - Add focused unit tests for plasticity gating (disabled ⇒ no weight/trace updates; enabled ⇒ bounded updates) and rollout stability (`isfinite`).
+- Add reporting for plasticity usage (e.g., `mean_abs_dw_mean`) so “plastic runs” can be checked for actually applying within-life updates.
 - Pre-register a small comparison protocol: fixed compute budget, multi-seed ES runs with/without plasticity on L1.0/L1.1 variants; evaluate saved `best_genome.npz` via `koki2 eval-run` on held-out episodes.
 
 Acceptance checks:

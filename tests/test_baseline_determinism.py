@@ -35,6 +35,7 @@ def test_baseline_rollouts_are_deterministic() -> None:
         assert float(jax.device_get(out1.integrity_lost_total)) == float(jax.device_get(out2.integrity_lost_total))
         assert float(jax.device_get(out1.integrity_min)) == float(jax.device_get(out2.integrity_min))
         assert bool(jax.device_get(out1.success)) == bool(jax.device_get(out2.success))
+        assert float(jax.device_get(out1.mean_abs_dw_mean)) == float(jax.device_get(out2.mean_abs_dw_mean))
 
 
 def test_baseline_jit_matches_eager() -> None:
@@ -59,3 +60,4 @@ def test_baseline_jit_matches_eager() -> None:
     assert float(jax.device_get(eager.bad_arrivals_total)) == float(jax.device_get(jitted.bad_arrivals_total))
     assert float(jax.device_get(eager.integrity_lost_total)) == float(jax.device_get(jitted.integrity_lost_total))
     assert float(jax.device_get(eager.integrity_min)) == float(jax.device_get(jitted.integrity_min))
+    assert float(jax.device_get(eager.mean_abs_dw_mean)) == float(jax.device_get(jitted.mean_abs_dw_mean))

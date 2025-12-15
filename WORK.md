@@ -1035,3 +1035,213 @@ Interpretation (provisional; early Stage 2 evidence):
 - With `eta=0.05` at this tiny ES budget, plasticity **tends to increase mean fitness** mainly via higher success rates, but it also **tends to worsen hazard-contact metrics** (higher bad-arrivals and lower integrity minima) in the same benchmark.
 - One of the three seeds (seed 1) produced best-genome behavior that is effectively indistinguishable between plastic and non-plastic under both evaluation seeds; this suggests plasticity may sometimes be “unused” (e.g., near-zero modulator / near-zero applied updates) or the evolved policy is insensitive to within-life adaptation under this budget.
 - This is compatible with the hypothesis that our current plasticity implementation is not yet strongly “consequence-driven” (the agent’s modulator does not currently read internal state), so enabling plasticity can improve task success without necessarily improving integrity-preservation outcomes.
+
+---
+
+## 2025-12-15 — Stage 2 instrumentation: measure plasticity usage (`mean_abs_dw_mean`)
+
+Goal: make it observable whether “plastic runs” are actually using within-life learning (and how strongly), to interpret mixed results (e.g., a seed where plastic/non-plastic look identical).
+
+Changes:
+- `src/koki2/types.py`: added `FitnessSummary.mean_abs_dw_mean` (mean absolute applied weight update per alive step).
+- `src/koki2/sim/orchestrator.py`: accumulate `AgentLog.mean_abs_dw` into `FitnessSummary.mean_abs_dw_mean`; baselines report 0.
+- `src/koki2/cli.py`: print `mean_abs_dw_mean` for both `baseline-l0` and `eval-run`.
+- Tests: extended determinism/JIT parity checks to include `mean_abs_dw_mean` (`tests/test_stage0_determinism.py`, `tests/test_baseline_determinism.py`).
+
+Verification:
+- Ran `uv run pytest` (21 tests) — all passing.
+
+Probe (re-evaluate Stage 2 run dirs; `--episodes 128 --seed 0`; baseline omitted):
+```bash
+for run_dir in \
+  runs/2025-12-15_stage2_es_noplast_seed0 \
+  runs/2025-12-15_stage2_es_noplast_seed1 \
+  runs/2025-12-15_stage2_es_noplast_seed2 \
+  runs/2025-12-15_stage2_es_plast_eta0.05_seed0 \
+  runs/2025-12-15_stage2_es_plast_eta0.05_seed1 \
+  runs/2025-12-15_stage2_es_plast_eta0.05_seed2; do
+  uv run koki2 eval-run --run-dir "$run_dir" --episodes 128 --seed 0 --baseline-policy none
+done
+```
+
+Observed `mean_abs_dw_mean` (best-genome only):
+- non-plastic: all seeds report `mean_abs_dw_mean=0.000000` (expected).
+- plastic (`eta=0.05`):
+  - seed 0: `mean_abs_dw_mean=0.002359`
+  - seed 1: `mean_abs_dw_mean=0.000037` (essentially “unused” under this probe)
+  - seed 2: `mean_abs_dw_mean=0.036644` (substantial within-life adaptation)
+
+Interpretation:
+- The “no effect” seed (seed 1) is consistent with negligible applied plastic updates rather than a deep failure of the evaluation protocol; future comparisons should report both performance and `mean_abs_dw_mean`.
+
+---
+
+## 2025-12-15 — Stage 2 follow-up: plasticity strength (`plast_eta`) sweep (0.01 vs 0.1)
+
+Goal: check whether the Stage 2 effect depends on plasticity update magnitude, and whether any setting improves performance without degrading hazard metrics.
+
+Env and compute budget: same as the Stage 2 benchmark above:
+- env: `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 --deplete-sources --respawn-delay 4 --grad-dropout-p 0.5 --steps 128`
+- ES: `--generations 10 --pop-size 64 --episodes 4`
+
+### A) ES runs
+
+Commands:
+```bash
+for eta in 0.01 0.1; do
+  for seed in 0 1 2; do
+    uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_es_plast_eta${eta}_seed${seed} \
+      --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+      --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+      --deplete-sources --respawn-delay 4 \
+      --grad-dropout-p 0.5 \
+      --plast-enabled --plast-eta $eta --plast-lambda 0.9
+  done
+done
+```
+
+Observed `best_fitness` (printed at end of each run):
+- `eta=0.01`: seed 0 `179.3750`, seed 1 `179.5000`, seed 2 `179.8750`
+- `eta=0.1`: seed 0 `179.7500`, seed 1 `179.5000`, seed 2 `180.2500`
+
+### B) Held-out eval (`koki2 eval-run`; 128 episodes; eval seeds 0 and 1)
+
+Commands (eval seed 0):
+```bash
+for eta in 0.01 0.1; do
+  for seed in 0 1 2; do
+    uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_es_plast_eta${eta}_seed${seed} --episodes 128 --seed 0 --baseline-policy none
+  done
+done
+```
+
+Observed outputs (selected; best-genome only; eval seed 0):
+- `eta=0.01`:
+  - seed 0: `mean_fitness=164.0742`, `success_rate=0.734`, `mean_bad_arrivals=1.1484`, `mean_integrity_min=0.7129`, `mean_abs_dw_mean=0.000082`
+  - seed 1: `mean_fitness=164.5273`, `success_rate=0.734`, `mean_bad_arrivals=1.0703`, `mean_integrity_min=0.7324`, `mean_abs_dw_mean=0.000007`
+  - seed 2: `mean_fitness=163.7031`, `success_rate=0.711`, `mean_bad_arrivals=1.1484`, `mean_integrity_min=0.7129`, `mean_abs_dw_mean=0.000068`
+- `eta=0.1`:
+  - seed 0: `mean_fitness=169.8711`, `success_rate=0.898`, `mean_bad_arrivals=2.5234`, `mean_integrity_min=0.3711`, `mean_abs_dw_mean=0.023372`
+  - seed 1: `mean_fitness=162.5195`, `success_rate=0.742`, `mean_bad_arrivals=1.2500`, `mean_integrity_min=0.6875`, `mean_abs_dw_mean=0.000063`
+  - seed 2: `mean_fitness=164.5312`, `success_rate=0.945`, `mean_bad_arrivals=2.2344`, `mean_integrity_min=0.4434`, `mean_abs_dw_mean=0.071393`
+
+Commands (eval seed 1):
+```bash
+for eta in 0.01 0.1; do
+  for seed in 0 1 2; do
+    uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_es_plast_eta${eta}_seed${seed} --episodes 128 --seed 1 --baseline-policy none
+  done
+done
+```
+
+Observed outputs (selected; best-genome only; eval seed 1):
+- `eta=0.01`:
+  - seed 0: `mean_fitness=159.3086`, `success_rate=0.656`, `mean_bad_arrivals=1.2578`, `mean_integrity_min=0.6855`, `mean_abs_dw_mean=0.000082`
+  - seed 1: `mean_fitness=159.0664`, `success_rate=0.641`, `mean_bad_arrivals=1.0781`, `mean_integrity_min=0.7305`, `mean_abs_dw_mean=0.000007`
+  - seed 2: `mean_fitness=162.5391`, `success_rate=0.711`, `mean_bad_arrivals=1.2109`, `mean_integrity_min=0.6973`, `mean_abs_dw_mean=0.000068`
+- `eta=0.1`:
+  - seed 0: `mean_fitness=166.9180`, `success_rate=0.859`, `mean_bad_arrivals=2.5312`, `mean_integrity_min=0.3672`, `mean_abs_dw_mean=0.023081`
+  - seed 1: `mean_fitness=164.2227`, `success_rate=0.758`, `mean_bad_arrivals=1.2656`, `mean_integrity_min=0.6836`, `mean_abs_dw_mean=0.000065`
+  - seed 2: `mean_fitness=161.9219`, `success_rate=0.922`, `mean_bad_arrivals=2.4062`, `mean_integrity_min=0.3984`, `mean_abs_dw_mean=0.072393`
+
+Interpretation (provisional):
+- Larger `plast_eta` correlates with substantially larger applied updates (`mean_abs_dw_mean`) in some seeds and yields very high success rates, but it also tends to increase bad-source contact and reduce integrity minima (riskier behavior).
+- Very small `plast_eta` yields near-zero updates and is effectively “almost non-plastic” under this benchmark; its performance appears sensitive to the evaluation episode set (eval seed).
+
+---
+
+## 2025-12-15 — Stage 2 robustness check: increase ES budget (30 generations; `eta=0.05` vs non-plastic)
+
+Goal: verify that the earlier plastic-vs-non-plastic pattern is not an artifact of the tiny 10-generation budget by rerunning at 30 generations on the same benchmark, then evaluating on held-out episodes and reporting `mean_abs_dw_mean`.
+
+Env: same Stage 2 benchmark (see above).
+
+Compute budget:
+- `--generations 30 --pop-size 64 --episodes 4 --steps 128`
+
+### A) ES runs
+
+Commands (non-plastic; seeds 0/1/2):
+```bash
+for seed in 0 1 2; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_es30_noplast_seed${seed} \
+    --generations 30 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5
+done
+```
+
+Observed `best_fitness`:
+- seed 0: `179.5000` (`runs/2025-12-15_stage2_es30_noplast_seed0`)
+- seed 1: `179.7500` (`runs/2025-12-15_stage2_es30_noplast_seed1`)
+- seed 2: `179.6250` (`runs/2025-12-15_stage2_es30_noplast_seed2`)
+
+Commands (plastic; seeds 0/1/2; `eta=0.05`):
+```bash
+for seed in 0 1 2; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_es30_plast_eta0.05_seed${seed} \
+    --generations 30 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5 \
+    --plast-enabled --plast-eta 0.05 --plast-lambda 0.9
+done
+```
+
+Observed `best_fitness` (note: the seed 2 run to `runs/2025-12-15_stage2_es30_plast_eta0.05_seed2` was interrupted; reran to a fresh directory):
+- seed 0: `180.2500` (`runs/2025-12-15_stage2_es30_plast_eta0.05_seed0`)
+- seed 1: `179.5000` (`runs/2025-12-15_stage2_es30_plast_eta0.05_seed1`)
+- seed 2: `180.3750` (`runs/2025-12-15_stage2_es30_plast_eta0.05_seed2_retry1`)
+
+### B) Held-out eval (`koki2 eval-run`; 128 episodes; eval seeds 0 and 1)
+
+Commands (eval seed 0):
+```bash
+for run_dir in \
+  runs/2025-12-15_stage2_es30_noplast_seed0 \
+  runs/2025-12-15_stage2_es30_noplast_seed1 \
+  runs/2025-12-15_stage2_es30_noplast_seed2 \
+  runs/2025-12-15_stage2_es30_plast_eta0.05_seed0 \
+  runs/2025-12-15_stage2_es30_plast_eta0.05_seed1 \
+  runs/2025-12-15_stage2_es30_plast_eta0.05_seed2_retry1; do
+  uv run koki2 eval-run --run-dir "$run_dir" --episodes 128 --seed 0 --baseline-policy none
+done
+```
+
+Observed outputs (selected; best-genome only; eval seed 0):
+- non-plastic:
+  - seed 0: `mean_fitness=162.5234`, `success_rate=0.703`, `mean_bad_arrivals=1.1875`, `mean_integrity_min=0.7031`
+  - seed 1: `mean_fitness=164.2188`, `success_rate=0.742`, `mean_bad_arrivals=1.2969`, `mean_integrity_min=0.6758`
+  - seed 2: `mean_fitness=164.2109`, `success_rate=0.742`, `mean_bad_arrivals=1.2891`, `mean_integrity_min=0.6777`
+- plastic (`eta=0.05`):
+  - seed 0: `mean_fitness=171.4141`, `success_rate=0.875`, `mean_bad_arrivals=1.8594`, `mean_integrity_min=0.5371`, `mean_abs_dw_mean=0.007055`
+  - seed 1: `mean_fitness=162.5195`, `success_rate=0.742`, `mean_bad_arrivals=1.2500`, `mean_integrity_min=0.6875`, `mean_abs_dw_mean=0.000037`
+  - seed 2: `mean_fitness=168.8633`, `success_rate=0.898`, `mean_bad_arrivals=1.8672`, `mean_integrity_min=0.5352`, `mean_abs_dw_mean=0.036644`
+
+Commands (eval seed 1):
+```bash
+for run_dir in \
+  runs/2025-12-15_stage2_es30_noplast_seed0 \
+  runs/2025-12-15_stage2_es30_noplast_seed1 \
+  runs/2025-12-15_stage2_es30_noplast_seed2 \
+  runs/2025-12-15_stage2_es30_plast_eta0.05_seed0 \
+  runs/2025-12-15_stage2_es30_plast_eta0.05_seed1 \
+  runs/2025-12-15_stage2_es30_plast_eta0.05_seed2_retry1; do
+  uv run koki2 eval-run --run-dir "$run_dir" --episodes 128 --seed 1 --baseline-policy none
+done
+```
+
+Observed outputs (selected; best-genome only; eval seed 1):
+- non-plastic:
+  - seed 0: `mean_fitness=162.1094`, `success_rate=0.695`, `mean_bad_arrivals=1.3125`, `mean_integrity_min=0.6719`
+  - seed 1: `mean_fitness=166.2148`, `success_rate=0.766`, `mean_bad_arrivals=1.2266`, `mean_integrity_min=0.6934`
+  - seed 2: `mean_fitness=164.7461`, `success_rate=0.766`, `mean_bad_arrivals=1.2422`, `mean_integrity_min=0.6895`
+- plastic (`eta=0.05`):
+  - seed 0: `mean_fitness=170.3203`, `success_rate=0.852`, `mean_bad_arrivals=1.7656`, `mean_integrity_min=0.5586`, `mean_abs_dw_mean=0.007266`
+  - seed 1: `mean_fitness=164.2227`, `success_rate=0.758`, `mean_bad_arrivals=1.2656`, `mean_integrity_min=0.6836`, `mean_abs_dw_mean=0.000038`
+  - seed 2: `mean_fitness=170.3477`, `success_rate=0.875`, `mean_bad_arrivals=1.9062`, `mean_integrity_min=0.5234`, `mean_abs_dw_mean=0.039221`
+
+Interpretation (provisional, but stronger than 10 generations):
+- Across eval seeds 0 and 1, `eta=0.05` remains **higher mean fitness** in 2/3 seeds and increases `mean_abs_dw_mean` in those same seeds, suggesting the effect is not purely a 10-gen fluke.
+- The same trade-off persists: improved success/fitness often comes with worse hazard metrics (higher bad arrivals / lower integrity minima).
