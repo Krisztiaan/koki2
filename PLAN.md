@@ -130,6 +130,19 @@ uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
 	uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 --grad-dropout-p 0.5
 	```
 
+### 2.5 Burst benchmarking on a temporary RunPod pod (tear-down by default)
+
+This repo is local-first, but for occasional throughput checks you can spin up a short-lived GPU pod, run a batch command, pull back artifacts, and tear the pod down automatically:
+
+```bash
+tools/runpod_burst_bench.sh --gpu-type 'NVIDIA GeForce RTX 3090' \
+  --image 'runpod/pytorch:2.1.0-py3.10-cuda12.1.0-devel-ubuntu22.04' \
+  --fetch runs \
+  -- uv run koki2 batch-evo-l0 --seed-count 3 --generations 50 --jit-es
+```
+
+Artifacts are downloaded under `runs/runpod_burst/` along with `manifest.txt` and the remote stdout/stderr log.
+
 ---
 
 ## 3. Incremental stage plan (dev + tests + verification)
@@ -217,6 +230,7 @@ Per PR-sized change:
    - Prefer `--jit-es` when testing GPU/backends to avoid per-generation host sync overhead.
    - For multi-seed sanity checks, prefer `koki2 batch-evo-l0` to amortize compilation.
 3. If touching determinism or RNG: rerun `tests/test_stage0_determinism.py`.
+4. If touching JAX/jit structure: check `tests/test_jax_discipline.py` for tracer leaks/recompile guards.
 
 Before moving to distributed/GPU:
 - Freeze a small set of “golden” configs + seeds and verify exact-match metrics on the laptop.

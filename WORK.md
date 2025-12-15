@@ -1575,6 +1575,22 @@ Interpretation (provisional):
 
 ---
 
+## 2025-12-15 — Tooling: scripted RunPod “burst benchmark” (auto tear-down)
+
+Goal: encode a safe “temporary pod” workflow (create → run → fetch → destroy) so we don’t leave pods running when we stop working or abandon a run.
+
+Changes:
+- `tools/runpod_burst_bench.sh`: creates a short-lived pod via `runpodctl`, uploads the repo as a tarball, runs a remote command via SSH, downloads selected artifacts, and always removes the pod on exit (including Ctrl-C).
+
+Verification:
+- `bash -n tools/runpod_burst_bench.sh`
+- `tools/runpod_burst_bench.sh --help`
+
+Notes:
+- This script currently uses `runpodctl` for lifecycle + SSH connect details, and uses `ssh`/`scp` for execution and file transfer (our current local `runpodctl exec` subcommand appears limited to `exec python`).
+
+---
+
 ## 2025-12-15 — Harness improvement: JIT-friendly ES loop (`--jit-es`, `--log-every`)
 
 Goal: improve throughput of large experiment batches (and make GPUs viable) without changing the scientific task, by eliminating per-generation host/device synchronization and Python-loop overhead in the ES harness.
@@ -1624,3 +1640,25 @@ uv run koki2 eval-run --run-dir runs/2025-12-15_smoke_evo_jit2 --episodes 4 --se
 Notes (provisional):
 - These changes should improve throughput on both CPU and GPU by removing logging-only computations from the inner rollout loop (e.g., spike-rate means, per-step plasticity magnitude summaries) and by reducing per-run/per-generation file I/O overhead.
 - A dedicated throughput benchmark is still needed to quantify gains and to check for backend-specific regressions.
+
+---
+
+## 2025-12-15 — JAX “sharp bits” + JAXPR audit (harness-focused)
+
+Goal: sanity-check that our “fast path” harness is JAX-friendly (no accidental host callbacks / dynamic-shape traps) and identify obvious hotspots to address next.
+
+Observations (JAXPR; qualitative):
+- `simulate_lifetime_fitness` / `simulate_lifetime_mvt` compile to a single `scan` each; no host callbacks showed up.
+- `es_run` (JIT+scan ES loop) includes `sort` ops when `log_every` triggers median computation (expected); for large populations, this is a non-trivial logging cost if `--log-every 1`.
+- JAX v0.7+ requires primitive parameters (notably shapes) to be hashable; tracing a config object that supplies `episodes`/`steps` as a tracer can fail.
+
+Changes:
+- `src/koki2/types.py`: registered `SimConfig`, `MVTConfig`, and `EvalConfig` as static pytrees (like `ChemotaxisEnvSpec`) so shape-like config fields remain static under `jit` / `make_jaxpr`.
+- `src/koki2/cli.py`: added `--jax-transfer-guard {log,disallow,...}` to help catch accidental implicit host<->device transfers while optimizing throughput.
+- `src/koki2/cli.py`: added debug flags `--jax-log-compiles`, `--jax-explain-cache-misses`, `--jax-debug-nans`, `--jax-disable-jit`, `--jax-check-tracer-leaks`.
+- `tests/test_jax_discipline.py`: added CI-style checks for (a) no unexpected recompiles (via jit cache size), (b) tracer-leak detection, and (c) a coarse JAXPR-size budget to catch accidental Python loops/dynamic control flow.
+
+Verification:
+```bash
+uv run pytest
+```

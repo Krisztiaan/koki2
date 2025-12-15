@@ -40,6 +40,10 @@ uv run koki2 batch-evo-l0 --seed-start 0 --seed-count 8 --log-every 5 --generati
 
 The CLI enables a persistent JAX compilation cache by default (via `JAX_COMPILATION_CACHE_DIR`). Override with `--jax-cache-dir <path>` or disable with `--no-jax-cache`.
 
+To detect accidental host/device boundary crossings while iterating on the harness, set `--jax-transfer-guard log` (or `disallow` once things are stable).
+
+To hunt accidental recompiles, enable `--jax-log-compiles --jax-explain-cache-misses`. For debugging NaNs and tracer leaks, use `--jax-debug-nans` and `--jax-check-tracer-leaks` (both are slow and intended for debugging).
+
 Evaluate the saved `best_genome.npz` on more episodes (recommended for interpretation; compares to a baseline on the same episode keys):
 
 ```bash

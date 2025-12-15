@@ -127,6 +127,43 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Disable JAX persistent compilation cache for this invocation.",
     )
+    p.add_argument(
+        "--jax-log-compiles",
+        action="store_true",
+        default=False,
+        help="Enable JAX compile logging (useful to detect accidental recompiles).",
+    )
+    p.add_argument(
+        "--jax-explain-cache-misses",
+        action="store_true",
+        default=False,
+        help="Ask JAX to explain jit cache misses (pairs well with --jax-log-compiles).",
+    )
+    p.add_argument(
+        "--jax-debug-nans",
+        action="store_true",
+        default=False,
+        help="Enable NaN/Inf debugging checks (slow; useful for correctness debugging).",
+    )
+    p.add_argument(
+        "--jax-disable-jit",
+        action="store_true",
+        default=False,
+        help="Disable JIT compilation (debug-only; harms performance).",
+    )
+    p.add_argument(
+        "--jax-check-tracer-leaks",
+        action="store_true",
+        default=False,
+        help="Wrap execution in jax.check_tracer_leaks() to catch tracer leaks (debug-only).",
+    )
+    p.add_argument(
+        "--jax-transfer-guard",
+        type=str,
+        default=None,
+        choices=["allow", "log", "disallow", "log_explicit", "disallow_explicit"],
+        help="Configure JAX transfer guard to log/disallow unintended host<->device transfers.",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     evo = sub.add_parser("evo-l0", help="Run a tiny OpenAI-ES loop on L0 chemotaxis.")
@@ -205,10 +242,22 @@ def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
 
     configure_jax_compilation_cache(cache_dir=args.jax_cache_dir, disable=bool(args.no_jax_cache))
+    if bool(args.jax_log_compiles):
+        os.environ["JAX_LOG_COMPILES"] = "1"
 
     import jax
     import jax.numpy as jnp
     import numpy as np
+
+    jax.config.update("jax_disable_jit", bool(args.jax_disable_jit))
+    if bool(args.jax_log_compiles):
+        jax.config.update("jax_log_compiles", True)
+    if bool(args.jax_explain_cache_misses):
+        jax.config.update("jax_explain_cache_misses", True)
+    if bool(args.jax_debug_nans):
+        jax.config.update("jax_debug_nans", True)
+    if args.jax_transfer_guard is not None:
+        jax.config.update("jax_transfer_guard", args.jax_transfer_guard)
 
     activate_jax_compilation_cache()
 
@@ -226,204 +275,39 @@ def main(argv: list[str] | None = None) -> None:
     )
     from koki2.types import ChemotaxisEnvSpec, ESConfig, EvalConfig, FitnessSummary, MVTConfig, SimConfig
 
-    if args.cmd == "evo-l0":
-        mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
-        topology_seed = args.topology_seed if args.topology_seed is not None else args.seed + 12345
-        energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
-        num_sources = max(int(args.num_sources), 1)
-        num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
+    def _run_cmd() -> None:
+        if args.cmd == "evo-l0":
+            mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
+            topology_seed = args.topology_seed if args.topology_seed is not None else args.seed + 12345
+            energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
+            num_sources = max(int(args.num_sources), 1)
+            num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
 
-        env_spec = ChemotaxisEnvSpec(
-            width=args.width,
-            height=args.height,
-            max_steps=args.steps,
-            energy_init=args.energy_init,
-            energy_decay=energy_decay,
-            energy_gain=args.energy_gain,
-            terminate_on_reach=args.terminate_on_reach,
-            obs_noise=args.obs_noise,
-            grad_dropout_p=float(args.grad_dropout_p),
-            grad_gain_min=args.grad_gain_min,
-            grad_gain_max=args.grad_gain_max,
-            grad_gain_start_phi=args.grad_gain_start_phi,
-            grad_gain_end_phi=args.grad_gain_end_phi,
-            grad_bins_min=args.grad_bins_min,
-            grad_bins_max=args.grad_bins_max,
-            grad_bins_start_phi=args.grad_bins_start_phi,
-            grad_bins_end_phi=args.grad_bins_end_phi,
-            num_sources=num_sources,
-            num_bad_sources=num_bad_sources,
-            bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
-            good_only_gradient=bool(args.good_only_gradient),
-            source_deplete=bool(args.deplete_sources),
-            source_respawn_delay=max(int(args.respawn_delay), 0),
-        )
-        dev_cfg = make_dev_config(
-            n_neurons=args.n_neurons,
-            obs_dim=4,
-            num_actions=5,
-            k_edges_per_neuron=args.k_edges,
-            topology_seed=topology_seed,
-            theta=args.theta,
-            tau_m=args.tau_m,
-            plast_enabled=bool(args.plast_enabled),
-            plast_eta=max(float(args.plast_eta), 0.0),
-            plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
-            modulator_kind=mod_kind,
-            mod_drive_scale=float(args.mod_drive_scale),
-        )
-        sim_cfg = SimConfig(
-            fitness_alpha=args.fitness_alpha,
-            fitness_beta=args.fitness_beta,
-            success_bonus=args.success_bonus,
-        )
-        eval_cfg = EvalConfig(episodes=args.episodes)
-        es_cfg = ESConfig(
-            pop_size=args.pop_size,
-            generations=args.generations,
-            sigma=args.sigma,
-            lr=args.lr,
-        )
-        mvt_cfg = MVTConfig(
-            enabled=args.mvt,
-            episodes=args.mvt_episodes,
-            steps=args.mvt_steps,
-            min_alive_steps=args.mvt_min_alive_steps,
-            min_action_entropy=args.mvt_min_action_entropy,
-            min_energy_gained=args.mvt_min_energy_gained,
-            fail_fitness=args.mvt_fail_fitness,
-        )
-
-        out_dir = Path(args.out_dir) if args.out_dir is not None else _default_out_dir("evo-l0", args.seed)
-        ensure_dir(out_dir)
-
-        config = {
-            "env_spec": env_spec._asdict(),
-            "dev_cfg": {
-                **dev_cfg._asdict(),
-                "edge_index": None,
-                "edge_index_shape": tuple(dev_cfg.edge_index.shape),
-                "topology_seed": topology_seed,
-            },
-            "sim_cfg": sim_cfg._asdict(),
-            "eval_cfg": eval_cfg._asdict(),
-            "es_cfg": es_cfg._asdict(),
-            "mvt_cfg": mvt_cfg._asdict(),
-        }
-        manifest = collect_manifest(seed=args.seed, config=config, cwd=Path.cwd())
-        write_manifest(out_dir, manifest)
-
-        res = run_openai_es(
-            seed=args.seed,
-            out_dir=out_dir,
-            env_spec=env_spec,
-            dev_cfg=dev_cfg,
-            topology_seed=topology_seed,
-            sim_cfg=sim_cfg,
-            eval_cfg=eval_cfg,
-            es_cfg=es_cfg,
-            mvt_cfg=mvt_cfg,
-            jit_es=bool(args.jit_es),
-            log_every=max(int(args.log_every), 1),
-        )
-        print(f"best_fitness={res.best_fitness:.4f} out_dir={out_dir}")
-        return
-
-    if args.cmd == "batch-evo-l0":
-        seeds = _parse_seed_list(seeds=args.seeds, seed_start=args.seed_start, seed_count=args.seed_count)
-        if len(seeds) < 1:
-            raise SystemExit("empty seed list")
-
-        energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
-        num_sources = max(int(args.num_sources), 1)
-        num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
-        mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
-
-        env_spec = ChemotaxisEnvSpec(
-            width=args.width,
-            height=args.height,
-            max_steps=args.steps,
-            energy_init=args.energy_init,
-            energy_decay=energy_decay,
-            energy_gain=args.energy_gain,
-            terminate_on_reach=args.terminate_on_reach,
-            obs_noise=args.obs_noise,
-            grad_dropout_p=float(args.grad_dropout_p),
-            grad_gain_min=args.grad_gain_min,
-            grad_gain_max=args.grad_gain_max,
-            grad_gain_start_phi=args.grad_gain_start_phi,
-            grad_gain_end_phi=args.grad_gain_end_phi,
-            grad_bins_min=args.grad_bins_min,
-            grad_bins_max=args.grad_bins_max,
-            grad_bins_start_phi=args.grad_bins_start_phi,
-            grad_bins_end_phi=args.grad_bins_end_phi,
-            num_sources=num_sources,
-            num_bad_sources=num_bad_sources,
-            bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
-            good_only_gradient=bool(args.good_only_gradient),
-            source_deplete=bool(args.deplete_sources),
-            source_respawn_delay=max(int(args.respawn_delay), 0),
-        )
-        sim_cfg = SimConfig(
-            fitness_alpha=args.fitness_alpha,
-            fitness_beta=args.fitness_beta,
-            success_bonus=args.success_bonus,
-        )
-        eval_cfg = EvalConfig(episodes=args.episodes)
-        es_cfg = ESConfig(
-            pop_size=args.pop_size,
-            generations=args.generations,
-            sigma=args.sigma,
-            lr=args.lr,
-        )
-        mvt_cfg = MVTConfig(
-            enabled=args.mvt,
-            episodes=args.mvt_episodes,
-            steps=args.mvt_steps,
-            min_alive_steps=args.mvt_min_alive_steps,
-            min_action_entropy=args.mvt_min_action_entropy,
-            min_energy_gained=args.mvt_min_energy_gained,
-            fail_fitness=args.mvt_fail_fitness,
-        )
-
-        out_root = Path(args.out_root) if args.out_root is not None else Path("runs")
-        ensure_dir(out_root)
-        stamp = utc_now_iso().replace(":", "").replace("+", "").replace(".", "")
-
-        # Build a runner once to amortize compilation; dev_cfg is an argument, so this can
-        # still be reused even if topology differs across seeds.
-        proto_topology_seed = args.topology_seed if args.topology_seed is not None else seeds[0] + 12345
-        proto_dev_cfg = make_dev_config(
-            n_neurons=args.n_neurons,
-            obs_dim=4,
-            num_actions=5,
-            k_edges_per_neuron=args.k_edges,
-            topology_seed=proto_topology_seed,
-            theta=args.theta,
-            tau_m=args.tau_m,
-            plast_enabled=bool(args.plast_enabled),
-            plast_eta=max(float(args.plast_eta), 0.0),
-            plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
-            modulator_kind=mod_kind,
-            mod_drive_scale=float(args.mod_drive_scale),
-        )
-        proto_mean = genome_init(jax.random.PRNGKey(0), proto_dev_cfg, scale=0.1)
-        _proto_vec, unravel = ravel_pytree(proto_mean)
-        dim = int(_proto_vec.shape[0])
-
-        es_run = make_openai_es_jit_runner(
-            env_spec=env_spec,
-            sim_cfg=sim_cfg,
-            eval_cfg=eval_cfg,
-            es_cfg=es_cfg,
-            mvt_cfg=mvt_cfg,
-            unravel=unravel,
-            dim=dim,
-            log_every=max(int(args.log_every), 1),
-        )
-
-        for seed in seeds:
-            topology_seed = args.topology_seed if args.topology_seed is not None else seed + 12345
+            env_spec = ChemotaxisEnvSpec(
+                width=args.width,
+                height=args.height,
+                max_steps=args.steps,
+                energy_init=args.energy_init,
+                energy_decay=energy_decay,
+                energy_gain=args.energy_gain,
+                terminate_on_reach=args.terminate_on_reach,
+                obs_noise=args.obs_noise,
+                grad_dropout_p=float(args.grad_dropout_p),
+                grad_gain_min=args.grad_gain_min,
+                grad_gain_max=args.grad_gain_max,
+                grad_gain_start_phi=args.grad_gain_start_phi,
+                grad_gain_end_phi=args.grad_gain_end_phi,
+                grad_bins_min=args.grad_bins_min,
+                grad_bins_max=args.grad_bins_max,
+                grad_bins_start_phi=args.grad_bins_start_phi,
+                grad_bins_end_phi=args.grad_bins_end_phi,
+                num_sources=num_sources,
+                num_bad_sources=num_bad_sources,
+                bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+                good_only_gradient=bool(args.good_only_gradient),
+                source_deplete=bool(args.deplete_sources),
+                source_respawn_delay=max(int(args.respawn_delay), 0),
+            )
             dev_cfg = make_dev_config(
                 n_neurons=args.n_neurons,
                 obs_dim=4,
@@ -438,8 +322,29 @@ def main(argv: list[str] | None = None) -> None:
                 modulator_kind=mod_kind,
                 mod_drive_scale=float(args.mod_drive_scale),
             )
+            sim_cfg = SimConfig(
+                fitness_alpha=args.fitness_alpha,
+                fitness_beta=args.fitness_beta,
+                success_bonus=args.success_bonus,
+            )
+            eval_cfg = EvalConfig(episodes=args.episodes)
+            es_cfg = ESConfig(
+                pop_size=args.pop_size,
+                generations=args.generations,
+                sigma=args.sigma,
+                lr=args.lr,
+            )
+            mvt_cfg = MVTConfig(
+                enabled=args.mvt,
+                episodes=args.mvt_episodes,
+                steps=args.mvt_steps,
+                min_alive_steps=args.mvt_min_alive_steps,
+                min_action_entropy=args.mvt_min_action_entropy,
+                min_energy_gained=args.mvt_min_energy_gained,
+                fail_fitness=args.mvt_fail_fitness,
+            )
 
-            out_dir = out_root / f"{stamp}_{args.tag}_seed{seed}"
+            out_dir = Path(args.out_dir) if args.out_dir is not None else _default_out_dir("evo-l0", args.seed)
             ensure_dir(out_dir)
 
             config = {
@@ -455,186 +360,250 @@ def main(argv: list[str] | None = None) -> None:
                 "es_cfg": es_cfg._asdict(),
                 "mvt_cfg": mvt_cfg._asdict(),
             }
-            write_json(out_dir / "config.json", {"seed": seed, **config})
-            manifest = collect_manifest(seed=seed, config=config, cwd=Path.cwd())
+            manifest = collect_manifest(seed=args.seed, config=config, cwd=Path.cwd())
             write_manifest(out_dir, manifest)
 
-            master = jax.random.PRNGKey(seed)
-            init_key = jax.random.fold_in(master, 0)
-            mean = genome_init(init_key, dev_cfg, scale=0.1)
-            mean_vec, _ = ravel_pytree(mean)
+            res = run_openai_es(
+                seed=args.seed,
+                out_dir=out_dir,
+                env_spec=env_spec,
+                dev_cfg=dev_cfg,
+                topology_seed=topology_seed,
+                sim_cfg=sim_cfg,
+                eval_cfg=eval_cfg,
+                es_cfg=es_cfg,
+                mvt_cfg=mvt_cfg,
+                jit_es=bool(args.jit_es),
+                log_every=max(int(args.log_every), 1),
+            )
+            print(f"best_fitness={res.best_fitness:.4f} out_dir={out_dir}")
+            return
 
-            best_fit_final, best_vec_final, logs = es_run(master, mean_vec, dev_cfg)
-            best_fitness = float(jax.device_get(best_fit_final))
-            best_genome = unravel(best_vec_final)
+        if args.cmd == "batch-evo-l0":
+            seeds = _parse_seed_list(seeds=args.seeds, seed_start=args.seed_start, seed_count=args.seed_count)
+            if len(seeds) < 1:
+                raise SystemExit("empty seed list")
 
-            host_logs = jax.device_get(logs)
-            host_best = np.asarray(host_logs.best_fitness)
-            host_mean = np.asarray(host_logs.mean_fitness)
-            host_median = np.asarray(host_logs.median_fitness)
-            host_mvt = np.asarray(host_logs.mvt_pass_rate)
+            energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
+            num_sources = max(int(args.num_sources), 1)
+            num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
+            mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
 
-            records: list[dict[str, object]] = []
-            for gen in range(int(es_cfg.generations)):
-                if np.isnan(host_best[gen]):
-                    continue
-                mvt_val = None if np.isnan(host_mvt[gen]) else float(host_mvt[gen])
-                records.append(
-                    {
-                        "generation": int(gen),
-                        "best_fitness": float(host_best[gen]),
-                        "mean_fitness": float(host_mean[gen]),
-                        "median_fitness": float(host_median[gen]),
-                        "mvt_pass_rate": mvt_val,
-                    }
+            env_spec = ChemotaxisEnvSpec(
+                width=args.width,
+                height=args.height,
+                max_steps=args.steps,
+                energy_init=args.energy_init,
+                energy_decay=energy_decay,
+                energy_gain=args.energy_gain,
+                terminate_on_reach=args.terminate_on_reach,
+                obs_noise=args.obs_noise,
+                grad_dropout_p=float(args.grad_dropout_p),
+                grad_gain_min=args.grad_gain_min,
+                grad_gain_max=args.grad_gain_max,
+                grad_gain_start_phi=args.grad_gain_start_phi,
+                grad_gain_end_phi=args.grad_gain_end_phi,
+                grad_bins_min=args.grad_bins_min,
+                grad_bins_max=args.grad_bins_max,
+                grad_bins_start_phi=args.grad_bins_start_phi,
+                grad_bins_end_phi=args.grad_bins_end_phi,
+                num_sources=num_sources,
+                num_bad_sources=num_bad_sources,
+                bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+                good_only_gradient=bool(args.good_only_gradient),
+                source_deplete=bool(args.deplete_sources),
+                source_respawn_delay=max(int(args.respawn_delay), 0),
+            )
+            sim_cfg = SimConfig(
+                fitness_alpha=args.fitness_alpha,
+                fitness_beta=args.fitness_beta,
+                success_bonus=args.success_bonus,
+            )
+            eval_cfg = EvalConfig(episodes=args.episodes)
+            es_cfg = ESConfig(
+                pop_size=args.pop_size,
+                generations=args.generations,
+                sigma=args.sigma,
+                lr=args.lr,
+            )
+            mvt_cfg = MVTConfig(
+                enabled=args.mvt,
+                episodes=args.mvt_episodes,
+                steps=args.mvt_steps,
+                min_alive_steps=args.mvt_min_alive_steps,
+                min_action_entropy=args.mvt_min_action_entropy,
+                min_energy_gained=args.mvt_min_energy_gained,
+                fail_fitness=args.mvt_fail_fitness,
+            )
+
+            out_root = Path(args.out_root) if args.out_root is not None else Path("runs")
+            ensure_dir(out_root)
+            stamp = utc_now_iso().replace(":", "").replace("+", "").replace(".", "")
+
+            proto_topology_seed = args.topology_seed if args.topology_seed is not None else seeds[0] + 12345
+            proto_dev_cfg = make_dev_config(
+                n_neurons=args.n_neurons,
+                obs_dim=4,
+                num_actions=5,
+                k_edges_per_neuron=args.k_edges,
+                topology_seed=proto_topology_seed,
+                theta=args.theta,
+                tau_m=args.tau_m,
+                plast_enabled=bool(args.plast_enabled),
+                plast_eta=max(float(args.plast_eta), 0.0),
+                plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
+                modulator_kind=mod_kind,
+                mod_drive_scale=float(args.mod_drive_scale),
+            )
+            proto_mean = genome_init(jax.random.PRNGKey(0), proto_dev_cfg, scale=0.1)
+            _proto_vec, unravel = ravel_pytree(proto_mean)
+            dim = int(_proto_vec.shape[0])
+
+            es_run = make_openai_es_jit_runner(
+                env_spec=env_spec,
+                sim_cfg=sim_cfg,
+                eval_cfg=eval_cfg,
+                es_cfg=es_cfg,
+                mvt_cfg=mvt_cfg,
+                unravel=unravel,
+                dim=dim,
+                log_every=max(int(args.log_every), 1),
+            )
+
+            for seed in seeds:
+                topology_seed = args.topology_seed if args.topology_seed is not None else seed + 12345
+                dev_cfg = make_dev_config(
+                    n_neurons=args.n_neurons,
+                    obs_dim=4,
+                    num_actions=5,
+                    k_edges_per_neuron=args.k_edges,
+                    topology_seed=topology_seed,
+                    theta=args.theta,
+                    tau_m=args.tau_m,
+                    plast_enabled=bool(args.plast_enabled),
+                    plast_eta=max(float(args.plast_eta), 0.0),
+                    plast_lambda=float(min(max(float(args.plast_lambda), 0.0), 1.0)),
+                    modulator_kind=mod_kind,
+                    mod_drive_scale=float(args.mod_drive_scale),
                 )
-            append_jsonl_many(out_dir / "generations.jsonl", records)
 
-            best_np = jax.tree_util.tree_map(lambda x: np.asarray(jax.device_get(x)), best_genome)._asdict()
-            np.savez(out_dir / "best_genome.npz", **best_np)
-            print(f"seed={seed} best_fitness={best_fitness:.4f} out_dir={out_dir}")
+                out_dir = out_root / f"{stamp}_{args.tag}_seed{seed}"
+                ensure_dir(out_dir)
 
-        return
+                config = {
+                    "env_spec": env_spec._asdict(),
+                    "dev_cfg": {
+                        **dev_cfg._asdict(),
+                        "edge_index": None,
+                        "edge_index_shape": tuple(dev_cfg.edge_index.shape),
+                        "topology_seed": topology_seed,
+                    },
+                    "sim_cfg": sim_cfg._asdict(),
+                    "eval_cfg": eval_cfg._asdict(),
+                    "es_cfg": es_cfg._asdict(),
+                    "mvt_cfg": mvt_cfg._asdict(),
+                }
+                write_json(out_dir / "config.json", {"seed": seed, **config})
+                manifest = collect_manifest(seed=seed, config=config, cwd=Path.cwd())
+                write_manifest(out_dir, manifest)
 
-    if args.cmd == "baseline-l0":
-        energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
-        num_sources = max(int(args.num_sources), 1)
-        num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
-        env_spec = ChemotaxisEnvSpec(
-            width=args.width,
-            height=args.height,
-            max_steps=args.steps,
-            energy_init=args.energy_init,
-            energy_decay=energy_decay,
-            energy_gain=args.energy_gain,
-            terminate_on_reach=args.terminate_on_reach,
-            obs_noise=args.obs_noise,
-            grad_dropout_p=float(args.grad_dropout_p),
-            grad_gain_min=args.grad_gain_min,
-            grad_gain_max=args.grad_gain_max,
-            grad_gain_start_phi=args.grad_gain_start_phi,
-            grad_gain_end_phi=args.grad_gain_end_phi,
-            grad_bins_min=args.grad_bins_min,
-            grad_bins_max=args.grad_bins_max,
-            grad_bins_start_phi=args.grad_bins_start_phi,
-            grad_bins_end_phi=args.grad_bins_end_phi,
-            num_sources=num_sources,
-            num_bad_sources=num_bad_sources,
-            bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
-            good_only_gradient=bool(args.good_only_gradient),
-            source_deplete=bool(args.deplete_sources),
-            source_respawn_delay=max(int(args.respawn_delay), 0),
-        )
-        sim_cfg = SimConfig(
-            fitness_alpha=args.fitness_alpha,
-            fitness_beta=args.fitness_beta,
-            success_bonus=args.success_bonus,
-        )
+                master = jax.random.PRNGKey(seed)
+                init_key = jax.random.fold_in(master, 0)
+                mean = genome_init(init_key, dev_cfg, scale=0.1)
+                mean_vec, _ = ravel_pytree(mean)
 
-        sim_fn = {
-            "greedy": simulate_lifetime_baseline_greedy,
-            "random": simulate_lifetime_baseline_random,
-            "stay": simulate_lifetime_baseline_stay,
-        }[args.policy]
+                best_fit_final, best_vec_final, logs = es_run(master, mean_vec, dev_cfg)
+                best_fitness = float(jax.device_get(best_fit_final))
+                best_genome = unravel(best_vec_final)
 
-        master = jax.random.PRNGKey(args.seed)
-        keys = jax.random.split(master, args.episodes)
-        t_idx = jnp.arange(env_spec.max_steps, dtype=jnp.int32)
-        outs = jax.vmap(lambda k: sim_fn(env_spec, sim_cfg, k, t_idx))(keys)
+                host_logs = jax.device_get(logs)
+                host_best = np.asarray(host_logs.best_fitness)
+                host_mean = np.asarray(host_logs.mean_fitness)
+                host_median = np.asarray(host_logs.median_fitness)
+                host_mvt = np.asarray(host_logs.mvt_pass_rate)
 
-        mean_fit = float(jax.device_get(jnp.mean(outs.fitness_scalar)))
-        succ_rate = float(jax.device_get(jnp.mean(outs.success.astype(jnp.float32))))
-        mean_alive = float(jax.device_get(jnp.mean(outs.t_alive.astype(jnp.float32))))
-        mean_gain = float(jax.device_get(jnp.mean(outs.energy_gained_total)))
-        mean_bad = float(jax.device_get(jnp.mean(outs.bad_arrivals_total)))
-        mean_ilost = float(jax.device_get(jnp.mean(outs.integrity_lost_total)))
-        mean_imin = float(jax.device_get(jnp.mean(outs.integrity_min)))
-        mean_ent = float(jax.device_get(jnp.mean(outs.action_entropy)))
-        mean_mode = float(jax.device_get(jnp.mean(outs.action_mode_frac)))
-        mean_dw = float(jax.device_get(jnp.mean(outs.mean_abs_dw_mean)))
+                records: list[dict[str, object]] = []
+                for gen in range(int(es_cfg.generations)):
+                    if np.isnan(host_best[gen]):
+                        continue
+                    mvt_val = None if np.isnan(host_mvt[gen]) else float(host_mvt[gen])
+                    records.append(
+                        {
+                            "generation": int(gen),
+                            "best_fitness": float(host_best[gen]),
+                            "mean_fitness": float(host_mean[gen]),
+                            "median_fitness": float(host_median[gen]),
+                            "mvt_pass_rate": mvt_val,
+                        }
+                    )
+                append_jsonl_many(out_dir / "generations.jsonl", records)
 
-        print(
-            "baseline_l0"
-            f" policy={args.policy}"
-            f" episodes={args.episodes}"
-            f" mean_fitness={mean_fit:.4f}"
-            f" success_rate={succ_rate:.3f}"
-            f" mean_t_alive={mean_alive:.1f}"
-            f" mean_energy_gained={mean_gain:.4f}"
-            f" mean_bad_arrivals={mean_bad:.4f}"
-            f" mean_integrity_lost={mean_ilost:.4f}"
-            f" mean_integrity_min={mean_imin:.4f}"
-            f" mean_action_entropy={mean_ent:.4f}"
-            f" mean_action_mode_frac={mean_mode:.3f}"
-            f" mean_abs_dw_mean={mean_dw:.6f}"
-        )
-        return
+                best_np = jax.tree_util.tree_map(lambda x: np.asarray(jax.device_get(x)), best_genome)._asdict()
+                np.savez(out_dir / "best_genome.npz", **best_np)
+                print(f"seed={seed} best_fitness={best_fitness:.4f} out_dir={out_dir}")
 
-    if args.cmd == "eval-run":
-        run_dir = Path(args.run_dir)
-        manifest_path = run_dir / "manifest.json"
-        if not manifest_path.exists():
-            raise SystemExit(f"missing manifest.json in run dir: {run_dir}")
+            return
 
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        cfg = manifest.get("config", {})
-        if not isinstance(cfg, dict):
-            raise SystemExit(f"invalid manifest config in: {manifest_path}")
+        if args.cmd == "baseline-l0":
+            energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
+            num_sources = max(int(args.num_sources), 1)
+            num_bad_sources = max(min(int(args.num_bad_sources), num_sources), 0)
+            env_spec = ChemotaxisEnvSpec(
+                width=args.width,
+                height=args.height,
+                max_steps=args.steps,
+                energy_init=args.energy_init,
+                energy_decay=energy_decay,
+                energy_gain=args.energy_gain,
+                terminate_on_reach=args.terminate_on_reach,
+                obs_noise=args.obs_noise,
+                grad_dropout_p=float(args.grad_dropout_p),
+                grad_gain_min=args.grad_gain_min,
+                grad_gain_max=args.grad_gain_max,
+                grad_gain_start_phi=args.grad_gain_start_phi,
+                grad_gain_end_phi=args.grad_gain_end_phi,
+                grad_bins_min=args.grad_bins_min,
+                grad_bins_max=args.grad_bins_max,
+                grad_bins_start_phi=args.grad_bins_start_phi,
+                grad_bins_end_phi=args.grad_bins_end_phi,
+                num_sources=num_sources,
+                num_bad_sources=num_bad_sources,
+                bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+                good_only_gradient=bool(args.good_only_gradient),
+                source_deplete=bool(args.deplete_sources),
+                source_respawn_delay=max(int(args.respawn_delay), 0),
+            )
+            sim_cfg = SimConfig(
+                fitness_alpha=args.fitness_alpha,
+                fitness_beta=args.fitness_beta,
+                success_bonus=args.success_bonus,
+            )
 
-        env_spec = ChemotaxisEnvSpec(**cfg["env_spec"])
-        sim_cfg = SimConfig(**cfg["sim_cfg"])
+            sim_fn = {
+                "greedy": simulate_lifetime_baseline_greedy,
+                "random": simulate_lifetime_baseline_random,
+                "stay": simulate_lifetime_baseline_stay,
+            }[args.policy]
 
-        dev = cfg["dev_cfg"]
-        n = int(dev["n_neurons"])
-        edge_shape = tuple(dev["edge_index_shape"])
-        e = int(edge_shape[0])
-        if e % max(n, 1) != 0:
-            raise SystemExit(f"cannot infer k_edges_per_neuron from edge_index_shape={edge_shape} n_neurons={n}")
-        k_edges = e // max(n, 1)
-        dev_cfg = make_dev_config(
-            n_neurons=n,
-            obs_dim=int(dev["obs_dim"]),
-            num_actions=int(dev["num_actions"]),
-            k_edges_per_neuron=int(k_edges),
-            topology_seed=int(dev["topology_seed"]),
-            theta=float(dev["theta"]),
-            tau_m=float(dev["tau_m"]),
-            plast_enabled=bool(dev["plast_enabled"]),
-            plast_eta=float(dev["plast_eta"]),
-            plast_lambda=float(dev["plast_lambda"]),
-            modulator_kind=int(dev.get("modulator_kind", 0)),
-            mod_drive_scale=float(dev.get("mod_drive_scale", 1.0)),
-        )
+            master = jax.random.PRNGKey(args.seed)
+            keys = jax.random.split(master, args.episodes)
+            t_idx = jnp.arange(env_spec.max_steps, dtype=jnp.int32)
+            outs = jax.vmap(lambda k: sim_fn(env_spec, sim_cfg, k, t_idx))(keys)
 
-        data_path = run_dir / "best_genome.npz"
-        if not data_path.exists():
-            raise SystemExit(f"missing best_genome.npz in run dir: {run_dir}")
-        data = np.load(data_path)
-        genome = DirectGenome(
-            obs_w=jnp.asarray(data["obs_w"]),
-            rec_w=jnp.asarray(data["rec_w"]),
-            motor_w=jnp.asarray(data["motor_w"]),
-            motor_b=jnp.asarray(data["motor_b"]),
-            mod_w=jnp.asarray(data["mod_w"]),
-        )
+            mean_fit = float(jax.device_get(jnp.mean(outs.fitness_scalar)))
+            succ_rate = float(jax.device_get(jnp.mean(outs.success.astype(jnp.float32))))
+            mean_alive = float(jax.device_get(jnp.mean(outs.t_alive.astype(jnp.float32))))
+            mean_gain = float(jax.device_get(jnp.mean(outs.energy_gained_total)))
+            mean_bad = float(jax.device_get(jnp.mean(outs.bad_arrivals_total)))
+            mean_ilost = float(jax.device_get(jnp.mean(outs.integrity_lost_total)))
+            mean_imin = float(jax.device_get(jnp.mean(outs.integrity_min)))
+            mean_ent = float(jax.device_get(jnp.mean(outs.action_entropy)))
+            mean_mode = float(jax.device_get(jnp.mean(outs.action_mode_frac)))
+            mean_dw = float(jax.device_get(jnp.mean(outs.mean_abs_dw_mean)))
 
-        keys = jax.random.split(jax.random.PRNGKey(args.seed), args.episodes)
-        t_idx = jnp.arange(env_spec.max_steps, dtype=jnp.int32)
-        outs = jax.vmap(lambda k: simulate_lifetime(genome, env_spec, dev_cfg, sim_cfg, k, t_idx))(keys)
-
-        def _summ(tag: str, out: FitnessSummary) -> None:
-            mean_fit = float(jax.device_get(jnp.mean(out.fitness_scalar)))
-            succ_rate = float(jax.device_get(jnp.mean(out.success.astype(jnp.float32))))
-            mean_alive = float(jax.device_get(jnp.mean(out.t_alive.astype(jnp.float32))))
-            mean_gain = float(jax.device_get(jnp.mean(out.energy_gained_total)))
-            mean_bad = float(jax.device_get(jnp.mean(out.bad_arrivals_total)))
-            mean_ilost = float(jax.device_get(jnp.mean(out.integrity_lost_total)))
-            mean_imin = float(jax.device_get(jnp.mean(out.integrity_min)))
-            mean_ent = float(jax.device_get(jnp.mean(out.action_entropy)))
-            mean_mode = float(jax.device_get(jnp.mean(out.action_mode_frac)))
-            mean_dw = float(jax.device_get(jnp.mean(out.mean_abs_dw_mean)))
             print(
-                f"{tag}"
+                "baseline_l0"
+                f" policy={args.policy}"
                 f" episodes={args.episodes}"
                 f" mean_fitness={mean_fit:.4f}"
                 f" success_rate={succ_rate:.3f}"
@@ -647,18 +616,103 @@ def main(argv: list[str] | None = None) -> None:
                 f" mean_action_mode_frac={mean_mode:.3f}"
                 f" mean_abs_dw_mean={mean_dw:.6f}"
             )
+            return
 
-        print(f"eval_run run_dir={run_dir} eval_seed={args.seed}")
-        _summ("best_genome", outs)
+        if args.cmd == "eval-run":
+            run_dir = Path(args.run_dir)
+            manifest_path = run_dir / "manifest.json"
+            if not manifest_path.exists():
+                raise SystemExit(f"missing manifest.json in run dir: {run_dir}")
 
-        if args.baseline_policy != "none":
-            sim_fn = {
-                "greedy": simulate_lifetime_baseline_greedy,
-                "random": simulate_lifetime_baseline_random,
-                "stay": simulate_lifetime_baseline_stay,
-            }[args.baseline_policy]
-            base_outs = jax.vmap(lambda k: sim_fn(env_spec, sim_cfg, k, t_idx))(keys)
-            _summ(f"baseline_l0 policy={args.baseline_policy}", base_outs)
-        return
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            cfg = manifest.get("config", {})
+            if not isinstance(cfg, dict):
+                raise SystemExit(f"invalid manifest config in: {manifest_path}")
 
-    raise SystemExit(f"unknown cmd: {args.cmd}")
+            env_spec = ChemotaxisEnvSpec(**cfg["env_spec"])
+            sim_cfg = SimConfig(**cfg["sim_cfg"])
+
+            dev = cfg["dev_cfg"]
+            n = int(dev["n_neurons"])
+            edge_shape = tuple(dev["edge_index_shape"])
+            e = int(edge_shape[0])
+            if e % max(n, 1) != 0:
+                raise SystemExit(f"cannot infer k_edges_per_neuron from edge_index_shape={edge_shape} n_neurons={n}")
+            k_edges = e // max(n, 1)
+            dev_cfg = make_dev_config(
+                n_neurons=n,
+                obs_dim=int(dev["obs_dim"]),
+                num_actions=int(dev["num_actions"]),
+                k_edges_per_neuron=int(k_edges),
+                topology_seed=int(dev["topology_seed"]),
+                theta=float(dev["theta"]),
+                tau_m=float(dev["tau_m"]),
+                plast_enabled=bool(dev["plast_enabled"]),
+                plast_eta=float(dev["plast_eta"]),
+                plast_lambda=float(dev["plast_lambda"]),
+                modulator_kind=int(dev.get("modulator_kind", 0)),
+                mod_drive_scale=float(dev.get("mod_drive_scale", 1.0)),
+            )
+
+            data_path = run_dir / "best_genome.npz"
+            if not data_path.exists():
+                raise SystemExit(f"missing best_genome.npz in run dir: {run_dir}")
+            data = np.load(data_path)
+            genome = DirectGenome(
+                obs_w=jnp.asarray(data["obs_w"]),
+                rec_w=jnp.asarray(data["rec_w"]),
+                motor_w=jnp.asarray(data["motor_w"]),
+                motor_b=jnp.asarray(data["motor_b"]),
+                mod_w=jnp.asarray(data["mod_w"]),
+            )
+
+            keys = jax.random.split(jax.random.PRNGKey(args.seed), args.episodes)
+            t_idx = jnp.arange(env_spec.max_steps, dtype=jnp.int32)
+            outs = jax.vmap(lambda k: simulate_lifetime(genome, env_spec, dev_cfg, sim_cfg, k, t_idx))(keys)
+
+            def _summ(tag: str, out: FitnessSummary) -> None:
+                mean_fit = float(jax.device_get(jnp.mean(out.fitness_scalar)))
+                succ_rate = float(jax.device_get(jnp.mean(out.success.astype(jnp.float32))))
+                mean_alive = float(jax.device_get(jnp.mean(out.t_alive.astype(jnp.float32))))
+                mean_gain = float(jax.device_get(jnp.mean(out.energy_gained_total)))
+                mean_bad = float(jax.device_get(jnp.mean(out.bad_arrivals_total)))
+                mean_ilost = float(jax.device_get(jnp.mean(out.integrity_lost_total)))
+                mean_imin = float(jax.device_get(jnp.mean(out.integrity_min)))
+                mean_ent = float(jax.device_get(jnp.mean(out.action_entropy)))
+                mean_mode = float(jax.device_get(jnp.mean(out.action_mode_frac)))
+                mean_dw = float(jax.device_get(jnp.mean(out.mean_abs_dw_mean)))
+                print(
+                    f"{tag}"
+                    f" episodes={args.episodes}"
+                    f" mean_fitness={mean_fit:.4f}"
+                    f" success_rate={succ_rate:.3f}"
+                    f" mean_t_alive={mean_alive:.1f}"
+                    f" mean_energy_gained={mean_gain:.4f}"
+                    f" mean_bad_arrivals={mean_bad:.4f}"
+                    f" mean_integrity_lost={mean_ilost:.4f}"
+                    f" mean_integrity_min={mean_imin:.4f}"
+                    f" mean_action_entropy={mean_ent:.4f}"
+                    f" mean_action_mode_frac={mean_mode:.3f}"
+                    f" mean_abs_dw_mean={mean_dw:.6f}"
+                )
+
+            print(f"eval_run run_dir={run_dir} eval_seed={args.seed}")
+            _summ("best_genome", outs)
+
+            if args.baseline_policy != "none":
+                sim_fn = {
+                    "greedy": simulate_lifetime_baseline_greedy,
+                    "random": simulate_lifetime_baseline_random,
+                    "stay": simulate_lifetime_baseline_stay,
+                }[args.baseline_policy]
+                base_outs = jax.vmap(lambda k: sim_fn(env_spec, sim_cfg, k, t_idx))(keys)
+                _summ(f"baseline_l0 policy={args.baseline_policy}", base_outs)
+            return
+
+        raise SystemExit(f"unknown cmd: {args.cmd}")
+
+    if bool(args.jax_check_tracer_leaks):
+        with jax.check_tracer_leaks():
+            _run_cmd()
+    else:
+        _run_cmd()

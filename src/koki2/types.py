@@ -96,6 +96,17 @@ jax.tree_util.register_pytree_node(  # type: ignore[attr-defined]
 )
 
 
+# Config objects that influence shapes (e.g., number of episodes/steps) must be static under
+# `jit` / `make_jaxpr` in modern JAX (shape parameters must be hashable).
+def _static_cfg_flatten(cfg):  # type: ignore[no-untyped-def]
+    return (), cfg
+
+
+def _static_cfg_unflatten(aux_data, children):  # type: ignore[no-untyped-def]
+    del children
+    return aux_data
+
+
 class EnvLog(NamedTuple):
     reached_source: Array  # bool scalar
     energy_gained: Array  # float32 scalar
@@ -193,3 +204,20 @@ class ESConfig(NamedTuple):
     generations: int = 50
     sigma: float = 0.1
     lr: float = 0.05
+
+
+jax.tree_util.register_pytree_node(  # type: ignore[attr-defined]
+    SimConfig,
+    _static_cfg_flatten,
+    _static_cfg_unflatten,
+)
+jax.tree_util.register_pytree_node(  # type: ignore[attr-defined]
+    MVTConfig,
+    _static_cfg_flatten,
+    _static_cfg_unflatten,
+)
+jax.tree_util.register_pytree_node(  # type: ignore[attr-defined]
+    EvalConfig,
+    _static_cfg_flatten,
+    _static_cfg_unflatten,
+)
