@@ -1675,6 +1675,9 @@ Changes:
 - `colab/koki2_colab.ipynb`: added a Colab notebook that installs the appropriate JAX build for TPU/GPU/CPU and runs a tiny `evo-l0` smoke test.
 - `colab/README.md`, `README.md`: added a pointer to the Colab notebook.
 
+Published:
+- https://github.com/Krisztiaan/koki2
+
 Verification (local):
 ```bash
 uv run python -c "import json; json.load(open('colab/koki2_colab.ipynb','r',encoding='utf-8'))"

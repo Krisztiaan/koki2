@@ -26,6 +26,8 @@ uv run koki2 evo-l0 --generations 5 --pop-size 64 --steps 128
 
 ## Google Colab (GPU/TPU)
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/koki2_colab.ipynb)
+
 Use `colab/koki2_colab.ipynb` to run on Colab with GPU (e.g. L4/T4/A100) or TPU runtimes.
 
 ## Performance notes
