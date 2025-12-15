@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "koki2"
+version = "0.1.0"
+description = "Thesis implementation: biologically-constrained neuroevolution with JAX-first simulation."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "jax>=0.4.30",
+  "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6.0",
+]
+
+[project.scripts]
+koki2 = "koki2.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/koki2"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
