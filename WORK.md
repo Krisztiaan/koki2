@@ -1866,3 +1866,74 @@ Interpretation (provisional):
 - In this L1.0+L0.2 setting, naive greedy gradient following becomes **high-risk** (many bad arrivals → integrity collapse → early death), and random “low-contact” behavior can outscore greedy on mean fitness by surviving.
 - Fixed-weight ES adapts by substantially reducing hazard contact relative to greedy (higher integrity minima, near-full survival time), consistent with the thesis expectation that temporal structure amplifies survival-weighted strategies.
 - Relative to the random baseline, the evolved policies still accept more hazard contact (lower integrity minima), so “avoidance” remains a separate measured outcome rather than something we can infer from fitness alone.
+
+---
+
+## 2025-12-15 — Stage 2 (B): ES30 × seeds 0..4, held-out 512 episodes (L1.0 deplete + L1.1 intermittent gradient)
+
+Goal: extend the earlier Stage 2 benchmark to 5 seeds and a larger held-out evaluation, to compare **spike-modulated plasticity** vs **no-plastic** under L1.0+L1.1.
+
+Benchmark env (same as earlier Stage 2 runs in this file):
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--deplete-sources --respawn-delay 4`
+- `--grad-dropout-p 0.5`
+- `--steps 128`
+
+Compute budget (per run):
+- `--generations 30 --pop-size 64 --episodes 4`
+
+Runs:
+- Reused existing run dirs for seeds 0/1/2:
+  - `runs/2025-12-15_stage2_es30_noplast_seed{0,1,2}`
+  - `runs/2025-12-15_stage2_es30_plast_eta0.05_seed{0,1}` and `runs/2025-12-15_stage2_es30_plast_eta0.05_seed2_retry1`
+- Added seeds 3/4 (no-plastic):
+```bash
+for seed in 3 4; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_es30_noplast_seed${seed} \
+    --generations 30 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5
+done
+```
+- Observed:
+  - seed 3: `best_fitness=179.5000` (`runs/2025-12-15_stage2_es30_noplast_seed3`)
+  - seed 4: `best_fitness=179.5000` (`runs/2025-12-15_stage2_es30_noplast_seed4`)
+- Added seeds 3/4 (plastic; spike modulator default; `eta=0.05`, `lambda=0.9`):
+```bash
+for seed in 3 4; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_es30_plast_eta0.05_seed${seed} \
+    --generations 30 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5 \
+    --plast-enabled --plast-eta 0.05 --plast-lambda 0.9
+done
+```
+- Observed:
+  - seed 3: `best_fitness=179.6250` (`runs/2025-12-15_stage2_es30_plast_eta0.05_seed3`)
+  - seed 4: `best_fitness=180.1250` (`runs/2025-12-15_stage2_es30_plast_eta0.05_seed4`)
+
+Held-out eval (`koki2 eval-run`; 512 episodes; baseline omitted; logs):
+- eval seed 424242: `runs/stage2_scans/2025-12-15_eval_stage2_es30_l10l11_noplast_vs_plast_eta0.05_evalseed424242_ep512.txt`
+- eval seed 0: `runs/stage2_scans/2025-12-15_eval_stage2_es30_l10l11_noplast_vs_plast_eta0.05_evalseed0_ep512.txt`
+
+Observed `mean_fitness` per seed (held-out; 512 episodes):
+- eval seed 424242:
+  - no-plastic: seed 0 `164.2197`, seed 1 `165.4854`, seed 2 `165.1064`, seed 3 `163.0225`, seed 4 `161.7217`
+  - plastic: seed 0 `170.8857`, seed 1 `165.4131`, seed 2 `168.1543`, seed 3 `161.1787`, seed 4 `170.5039`
+- eval seed 0:
+  - no-plastic: seed 0 `163.5801`, seed 1 `162.6572`, seed 2 `163.0166`, seed 3 `163.2158`, seed 4 `162.7012`
+  - plastic: seed 0 `170.2354`, seed 1 `162.4463`, seed 2 `168.9834`, seed 3 `162.5176`, seed 4 `170.4082`
+
+Aggregate across seeds 0..4 (computed from the held-out outputs above; sample stdev):
+- eval seed 424242:
+  - no-plastic: mean `mean_fitness=163.9111` (stdev `1.5480`), `success_rate=0.7360` (stdev `0.0178`), `mean_t_alive=126.5` (stdev `0.8`), `mean_bad_arrivals=1.2199` (stdev `0.0781`), `mean_integrity_min=0.6950` (stdev `0.0195`)
+  - plastic: mean `mean_fitness=167.2271` (stdev `4.0267`), `success_rate=0.8344` (stdev `0.0959`), `mean_t_alive=124.7` (stdev `1.8`), `mean_bad_arrivals=1.7242` (stdev `0.5322`), `mean_integrity_min=0.5691` (stdev `0.1331`), `mean_abs_dw_mean=0.014106` (stdev `0.016841`)
+- eval seed 0:
+  - no-plastic: mean `mean_fitness=163.0342` (stdev `0.3822`), `success_rate=0.7264` (stdev `0.0079`), `mean_t_alive=126.1` (stdev `0.3`), `mean_bad_arrivals=1.2293` (stdev `0.0551`), `mean_integrity_min=0.6927` (stdev `0.0138`)
+  - plastic: mean `mean_fitness=166.9182` (stdev `4.0869`), `success_rate=0.8260` (stdev `0.0933`), `mean_t_alive=124.7` (stdev `1.1`), `mean_bad_arrivals=1.7250` (stdev `0.5075`), `mean_integrity_min=0.5691` (stdev `0.1265`), `mean_abs_dw_mean=0.014151` (stdev `0.016862`)
+
+Interpretation (provisional):
+- At this ES30 budget on L1.0+L1.1, spike-modulated plasticity (`eta=0.05`) increases held-out mean fitness and success rate **but** also increases hazard contact (more bad arrivals, lower integrity minima) and slightly reduces mean survival time, consistently across both held-out episode sets.
+- `mean_abs_dw_mean` is highly seed-dependent (some runs are near “effectively non-plastic”), so future comparisons should keep reporting “plasticity usage” alongside performance/hazard metrics.

@@ -172,16 +172,22 @@ Acceptance checks:
 - Across ≥3 seeds, best fitness improves over initial/random baseline.
 - No JAX shape instability when toggling nursing/MVT options.
 
-### Stage 2 — Plasticity sanity and benefits (planned)
+### Stage 2 — Plasticity sanity and benefits (in progress)
 
 Goal: demonstrate that within-life plasticity helps in L1 (noise/depletion/partial observability).
 
-Dev tasks:
-- Expose plasticity knobs on the CLI (`--plast-enabled`, `--plast-eta`, `--plast-lambda`) and ensure they are recorded in manifests for replay.
-- Add consequence-aligned neuromodulation as a tunable primitive (`--modulator-kind {spike,drive,event}` with drive/event-derived signals).
-- Add focused unit tests for plasticity gating (disabled ⇒ no weight/trace updates; enabled ⇒ bounded updates) and rollout stability (`isfinite`).
-- Add reporting for plasticity usage (e.g., `mean_abs_dw_mean`) so “plastic runs” can be checked for actually applying within-life updates.
-- Pre-register a small comparison protocol: fixed compute budget, multi-seed ES runs with/without plasticity on L1.0/L1.1 variants; evaluate saved `best_genome.npz` via `koki2 eval-run` on held-out episodes.
+Done:
+- Exposed plasticity knobs on the CLI (`--plast-enabled`, `--plast-eta`, `--plast-lambda`) and recorded them in manifests for replay.
+- Added consequence-aligned neuromodulation as a tunable primitive (`--modulator-kind {spike,drive,event}` with drive/event-derived signals).
+- Added focused unit tests for plasticity gating (disabled ⇒ no weight/trace updates; enabled ⇒ bounded updates) and rollout stability (`isfinite`).
+- Added reporting for plasticity usage (`mean_abs_dw_mean`) so “plastic runs” can be checked for actually applying within-life updates.
+- Pre-registered and ran a small comparison protocol: multi-seed ES runs with/without plasticity on L1.0/L1.1 variants; evaluate saved `best_genome.npz` via `koki2 eval-run` on held-out episodes.
+
+Latest checks (2025-12-15; see `WORK.md` for full commands/output):
+- L1.0 deplete/respawn + L1.1 intermittent gradients (`--grad-dropout-p 0.5`), ES30 × seeds 0..4, held-out 512 episodes:
+  - no-plastic mean `mean_fitness=163.9111` (eval seed 424242)
+  - plastic (spike mod; `--plast-eta 0.05`) mean `mean_fitness=167.2271` (eval seed 424242)
+  - plastic improves held-out mean fitness, but worsens hazard-contact metrics (more bad arrivals, lower integrity minima) in the same benchmark.
 
 Acceptance checks:
 - Plastic agents outperform fixed-weight agents on L1 across seeds (pre-registered metrics).
