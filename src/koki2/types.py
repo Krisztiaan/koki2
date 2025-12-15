@@ -64,6 +64,19 @@ class ChemotaxisEnvSpec(NamedTuple):
     source_deplete: bool = False
     source_respawn_delay: int = 0
 
+    # L1.0 hazard variant: override respawn delay for bad sources.
+    #
+    # - -1: use `source_respawn_delay` (default; matches existing behavior).
+    # - >=0: use this delay for bad sources while good sources use `source_respawn_delay`.
+    bad_source_respawn_delay: int = -1
+
+    # L1.0 hazard variant: probability that a *bad* source depletes on arrival when `source_deplete=True`.
+    #
+    # - 1.0: bad sources deplete immediately (same as good sources; matches the default L1.0 behavior).
+    # - 0.0: bad sources never deplete (persistent hazards).
+    # - in (0, 1): bad sources deplete more slowly in expectation.
+    bad_source_deplete_p: float = 1.0
+
 
 class ChemotaxisEnvState(NamedTuple):
     t: Array  # int32 scalar

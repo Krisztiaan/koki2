@@ -27,6 +27,12 @@ def _add_evo_l0_common_args(evo: argparse.ArgumentParser) -> None:
         help="Integrity loss applied when arriving on a harmful source (L0.2 variant).",
     )
     evo.add_argument(
+        "--bad-source-deplete-p",
+        type=float,
+        default=1.0,
+        help="Probability that a harmful source depletes on arrival when --deplete-sources is enabled (L1.0 hazard persistence knob).",
+    )
+    evo.add_argument(
         "--good-only-gradient",
         action="store_true",
         default=False,
@@ -39,6 +45,13 @@ def _add_evo_l0_common_args(evo: argparse.ArgumentParser) -> None:
         help="Deplete sources on arrival and respawn later (L1.0).",
     )
     evo.add_argument("--respawn-delay", type=int, default=0, help="Respawn delay in steps (only if --deplete-sources).")
+    evo.add_argument(
+        "--bad-source-respawn-delay",
+        "--bad-respawn-delay",
+        type=int,
+        default=-1,
+        help="Respawn delay in steps for harmful sources (only if --deplete-sources). -1 uses --respawn-delay.",
+    )
     evo.add_argument("--steps", type=int, default=128)
     evo.add_argument("--energy-init", type=float, default=1.0)
     evo.add_argument("--energy-decay", type=float, default=None)
@@ -189,6 +202,7 @@ def _build_parser() -> argparse.ArgumentParser:
     base.add_argument("--num-sources", type=int, default=1)
     base.add_argument("--num-bad-sources", type=int, default=0)
     base.add_argument("--bad-source-integrity-loss", type=float, default=0.0)
+    base.add_argument("--bad-source-deplete-p", type=float, default=1.0)
     base.add_argument(
         "--good-only-gradient",
         action="store_true",
@@ -197,6 +211,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     base.add_argument("--deplete-sources", action="store_true", default=False)
     base.add_argument("--respawn-delay", type=int, default=0)
+    base.add_argument("--bad-source-respawn-delay", "--bad-respawn-delay", type=int, default=-1)
     base.add_argument("--steps", type=int, default=128)
     base.add_argument("--energy-init", type=float, default=1.0)
     base.add_argument("--energy-decay", type=float, default=None)
@@ -304,9 +319,13 @@ def main(argv: list[str] | None = None) -> None:
                 num_sources=num_sources,
                 num_bad_sources=num_bad_sources,
                 bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+                bad_source_deplete_p=float(min(max(float(args.bad_source_deplete_p), 0.0), 1.0)),
                 good_only_gradient=bool(args.good_only_gradient),
                 source_deplete=bool(args.deplete_sources),
                 source_respawn_delay=max(int(args.respawn_delay), 0),
+                bad_source_respawn_delay=int(args.bad_source_respawn_delay)
+                if int(args.bad_source_respawn_delay) >= 0
+                else -1,
             )
             dev_cfg = make_dev_config(
                 n_neurons=args.n_neurons,
@@ -410,9 +429,13 @@ def main(argv: list[str] | None = None) -> None:
                 num_sources=num_sources,
                 num_bad_sources=num_bad_sources,
                 bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+                bad_source_deplete_p=float(min(max(float(args.bad_source_deplete_p), 0.0), 1.0)),
                 good_only_gradient=bool(args.good_only_gradient),
                 source_deplete=bool(args.deplete_sources),
                 source_respawn_delay=max(int(args.respawn_delay), 0),
+                bad_source_respawn_delay=int(args.bad_source_respawn_delay)
+                if int(args.bad_source_respawn_delay) >= 0
+                else -1,
             )
             sim_cfg = SimConfig(
                 fitness_alpha=args.fitness_alpha,
@@ -569,9 +592,13 @@ def main(argv: list[str] | None = None) -> None:
                 num_sources=num_sources,
                 num_bad_sources=num_bad_sources,
                 bad_source_integrity_loss=max(float(args.bad_source_integrity_loss), 0.0),
+                bad_source_deplete_p=float(min(max(float(args.bad_source_deplete_p), 0.0), 1.0)),
                 good_only_gradient=bool(args.good_only_gradient),
                 source_deplete=bool(args.deplete_sources),
                 source_respawn_delay=max(int(args.respawn_delay), 0),
+                bad_source_respawn_delay=int(args.bad_source_respawn_delay)
+                if int(args.bad_source_respawn_delay) >= 0
+                else -1,
             )
             sim_cfg = SimConfig(
                 fitness_alpha=args.fitness_alpha,

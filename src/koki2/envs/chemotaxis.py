@@ -161,13 +161,28 @@ def env_step(
     energy_gained = jnp.asarray(spec.energy_gain, dtype=jnp.float32) * num_good
 
     if spec.source_deplete:
-        delay = jnp.asarray(spec.source_respawn_delay, dtype=jnp.int32)
-        source_active = jnp.where(arrived, jnp.array(False, dtype=jnp.bool_), state.source_active)
-        source_respawn_t = jnp.where(arrived, delay, state.source_respawn_t)
+        delay_good = jnp.asarray(spec.source_respawn_delay, dtype=jnp.int32)
+        bad_delay_int = int(spec.bad_source_respawn_delay)
+        if bad_delay_int < 0:
+            bad_delay_int = int(spec.source_respawn_delay)
+        delay_bad = jnp.asarray(bad_delay_int, dtype=jnp.int32)
+
+        if int(spec.num_bad_sources) > 0 and float(spec.bad_source_deplete_p) < 1.0:
+            rng_deplete, rng = jax.random.split(rng, 2)
+            bad_p = jnp.asarray(spec.bad_source_deplete_p, dtype=jnp.float32)
+            bad_p = jnp.clip(bad_p, 0.0, 1.0)
+            deplete_bad = jax.random.bernoulli(rng_deplete, p=bad_p, shape=state.source_active.shape)
+            deplete_now = arrived & (jnp.logical_not(state.source_is_bad) | deplete_bad)
+        else:
+            deplete_now = arrived
+
+        source_active = jnp.where(deplete_now, jnp.array(False, dtype=jnp.bool_), state.source_active)
+        delay_per_source = jnp.where(state.source_is_bad, delay_bad, delay_good)
+        source_respawn_t = jnp.where(deplete_now, delay_per_source, state.source_respawn_t)
 
         # Countdown and respawn.
         dec = jnp.array(1, dtype=jnp.int32)
-        dec_mask = jnp.logical_and(jnp.logical_not(source_active), jnp.logical_not(arrived))
+        dec_mask = jnp.logical_and(jnp.logical_not(source_active), jnp.logical_not(deplete_now))
         dec_t = jnp.maximum(source_respawn_t - dec, jnp.array(0, dtype=jnp.int32))
         source_respawn_t = jnp.where(dec_mask, dec_t, source_respawn_t)
         source_respawn_t = jnp.where(source_active, jnp.array(0, dtype=jnp.int32), source_respawn_t)

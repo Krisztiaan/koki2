@@ -1937,3 +1937,120 @@ Aggregate across seeds 0..4 (computed from the held-out outputs above; sample st
 Interpretation (provisional):
 - At this ES30 budget on L1.0+L1.1, spike-modulated plasticity (`eta=0.05`) increases held-out mean fitness and success rate **but** also increases hazard contact (more bad arrivals, lower integrity minima) and slightly reduces mean survival time, consistently across both held-out episode sets.
 - `mean_abs_dw_mean` is highly seed-dependent (some runs are near “effectively non-plastic”), so future comparisons should keep reporting “plasticity usage” alongside performance/hazard metrics.
+
+---
+
+## 2025-12-15 — Evaluation note: strengthening L1.0 “survival-weighted” evidence
+
+Motivation:
+- We can already see L1.0 deplete/respawn pushing evolution away from naive gradient chasing and toward longer survival / reduced hazard contact relative to greedy (`WORK.md` entries above), which matches the L1.0 intent in `thesis/12_IMPLEMENTATION_ENVIRONMENT_LADDER_SPEC.md`.
+- To make **stronger, cleaner statements** (and reduce “could this be a loophole?” ambiguity), we want larger effect sizes and fewer confounds in the L1.0+hazards setup.
+
+Potential confound to address:
+- In the current L1.0 implementation, **bad sources also deplete immediately on arrival**, meaning an agent can sometimes “pay damage to remove a hazard” (self-damage as a clearing mechanism). This can blur the interpretation of hazard contact vs avoidance.
+
+Decisions / next steps:
+- Add an env knob so **bad sources deplete more slowly than good sources** (e.g., a per-arrival deplete probability for bad sources). This keeps tensor shapes unchanged while increasing the pressure for sustained avoidance (hazards persist more).
+- Run a small success-bonus ablation (`--success-bonus 0` vs default) under L1.0+hazards to check how much reach-shaping influences risk-taking vs survival-weighted strategies.
+- Continue treating “avoidance” as a measured outcome (`mean_bad_arrivals`, `mean_integrity_min`), not inferred from fitness alone.
+
+---
+
+## 2025-12-15 — L1.0 hazard persistence knobs + effect-size sweep (stronger evidence)
+
+Goal:
+- Increase the decisiveness of the “L1.0 amplifies survival-weighted strategies” evidence by (a) reducing the “clear hazard by stepping on it” loophole and (b) increasing effect size via a longer horizon.
+
+Implementation (hazard persistence knobs):
+- Added:
+  - `ChemotaxisEnvSpec.bad_source_deplete_p`: probability that a bad source depletes on arrival (default `1.0` preserves existing behavior).
+  - `ChemotaxisEnvSpec.bad_source_respawn_delay`: override respawn delay for bad sources (`-1` uses `source_respawn_delay`).
+- CLI flags:
+  - `--bad-source-deplete-p`
+  - `--bad-source-respawn-delay` / `--bad-respawn-delay`
+- Tests:
+  - `tests/test_env_depletion.py`: bad-source deplete probability + bad-source respawn delay override.
+
+Quick note (important for interpretation):
+- In this environment, if a bad source does **not** deplete on arrival, the gradient at the source location is exactly zero, so the greedy baseline can “camp” and avoid further arrivals. This can make greedy **safer** (but less successful), which is not the intended “amplify avoidance pressure” direction for this sweep.
+- For the experiments below, we therefore kept `--bad-source-deplete-p 1.0` (deplete on arrival) and used `--bad-source-respawn-delay 0` to make hazards hard to “clear” (they respawn immediately elsewhere).
+
+Verification:
+```bash
+uv run pytest
+```
+
+### Effect-size sweep: longer horizon + fast bad respawn (ES30 × seeds 0..4)
+
+Benchmark env:
+- L1.0 deplete/respawn + L0.2 harmful sources
+- longer horizon: `--steps 256`
+- hazards persist (hard to clear): `--bad-source-respawn-delay 0`
+- hazards still deplete on arrival: `--bad-source-deplete-p 1.0`
+
+Compute budget (per run):
+- `--generations 30 --pop-size 64 --episodes 4` (JIT ES; `--jit-es`)
+
+#### A) Default shaping (`--success-bonus 50`)
+
+ES runs (log: `runs/stage1_scans/2025-12-15_es30_l10_badsrc_steps256_badresp0_succ50_seed0-4.txt`):
+```bash
+uv run koki2 batch-evo-l0 \
+  --seed-start 0 --seed-count 5 \
+  --out-root runs/stage1_es_l10_stronger \
+  --tag stage1_l10_badsrc_steps256_badresp0_g30_p64_ep4_succ50 \
+  --generations 30 --pop-size 64 --episodes 4 --steps 256 \
+  --deplete-sources --respawn-delay 4 --bad-source-respawn-delay 0 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --bad-source-deplete-p 1.0 \
+  --success-bonus 50.0 \
+  --jit-es --log-every 10
+```
+
+Baselines (512 episodes; eval seeds 424242 and 0; log: `runs/stage1_scans/2025-12-15_baselines_l10_badsrc_steps256_badresp0_succ50_ep512.txt`):
+- eval seed 424242:
+  - greedy: `mean_fitness=147.9619`, `mean_t_alive=101.3`, `mean_bad_arrivals=3.4805`, `mean_integrity_min=0.1318`
+  - random: `mean_fitness=277.9775`, `mean_t_alive=255.4`, `mean_bad_arrivals=0.5918`, `mean_integrity_min=0.8521`
+
+Held-out best-genome eval (512 episodes; logs):
+- eval seed 424242: `runs/stage1_scans/2025-12-15_eval_es30_l10_badsrc_steps256_badresp0_succ50_evalseed424242_ep512.txt`
+- eval seed 0: `runs/stage1_scans/2025-12-15_eval_es30_l10_badsrc_steps256_badresp0_succ50_evalseed0_ep512.txt`
+
+Aggregate across seeds 0..4 (computed from the held-out logs above; sample stdev):
+- eval seed 424242:
+  - best_genome: mean `mean_fitness=286.9103` (stdev `2.0329`), `success_rate=0.7322` (stdev `0.0202`), `mean_t_alive=249.7` (stdev `1.2`), `mean_bad_arrivals=1.2730` (stdev `0.0556`), `mean_integrity_min=0.6818` (stdev `0.0138`)
+
+Interpretation (provisional):
+- This longer-horizon L1.0 setup makes the survival tradeoff much more decisive: greedy dies very early on average, while ES best-genomes survive nearly the full horizon and substantially reduce hazard contact relative to greedy (fewer bad arrivals; much higher integrity minima).
+- Best-genomes also surpass the random baseline on held-out mean fitness in this particular configuration, primarily via much higher success rates (while still being riskier than random in hazard metrics).
+
+#### B) Success-bonus ablation (`--success-bonus 0`)
+
+ES runs (log: `runs/stage1_scans/2025-12-15_es30_l10_badsrc_steps256_badresp0_succ0_seed0-4.txt`):
+```bash
+uv run koki2 batch-evo-l0 \
+  --seed-start 0 --seed-count 5 \
+  --out-root runs/stage1_es_l10_stronger \
+  --tag stage1_l10_badsrc_steps256_badresp0_g30_p64_ep4_succ0 \
+  --generations 30 --pop-size 64 --episodes 4 --steps 256 \
+  --deplete-sources --respawn-delay 4 --bad-source-respawn-delay 0 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --bad-source-deplete-p 1.0 \
+  --success-bonus 0.0 \
+  --jit-es --log-every 10
+```
+
+Baselines (512 episodes; eval seed 424242; log: `runs/stage1_scans/2025-12-15_baselines_l10_badsrc_steps256_badresp0_succ0_ep512.txt`):
+- random: `mean_fitness=255.7119`, `mean_t_alive=255.4`
+
+Held-out best-genome eval (512 episodes; logs):
+- eval seed 424242: `runs/stage1_scans/2025-12-15_eval_es30_l10_badsrc_steps256_badresp0_succ0_evalseed424242_ep512.txt`
+- eval seed 0: `runs/stage1_scans/2025-12-15_eval_es30_l10_badsrc_steps256_badresp0_succ0_evalseed0_ep512.txt`
+
+Aggregate across seeds 0..4 (computed from the held-out logs above; sample stdev):
+- eval seed 424242:
+  - best_genome: mean `mean_fitness=247.5529` (stdev `7.4015`), `mean_t_alive=246.8` (stdev `7.7`), `mean_bad_arrivals=1.4922` (stdev `0.5538`), `mean_integrity_min=0.6270` (stdev `0.1384`)
+
+Interpretation (provisional):
+- With `success_bonus=0`, the random baseline (near-full survival) is harder to beat on fitness in this long-horizon setup; the ES best-genomes are lower-fitness on average (and show substantially higher variance across seeds).
+- This suggests the reach/success shaping term is not just a cosmetic metric tweak: it meaningfully changes which strategies are selected under fixed compute, and should be treated as an explicit experimental axis (report both `success_bonus` setting and hazard metrics when comparing “survival-weighted” claims).

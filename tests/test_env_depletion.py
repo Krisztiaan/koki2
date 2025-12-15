@@ -66,3 +66,137 @@ def test_deplete_and_respawn_counts_down_and_resamples_position() -> None:
     expected_gx = dx / float(max(spec.width - 1, 1))
     assert abs(float(jax.device_get(obs3[0])) - expected_gx) < 1e-6
     assert float(jax.device_get(log3.energy_gained)) == 0.0
+
+
+def test_bad_source_deplete_p_zero_keeps_hazard_active() -> None:
+    spec = ChemotaxisEnvSpec(
+        width=8,
+        height=1,
+        max_steps=8,
+        energy_init=1.0,
+        energy_decay=0.0,
+        energy_gain=0.25,
+        terminate_on_reach=False,
+        obs_noise=0.0,
+        num_sources=1,
+        num_bad_sources=1,
+        bad_source_integrity_loss=0.25,
+        source_deplete=True,
+        source_respawn_delay=2,
+        bad_source_deplete_p=0.0,
+    )
+    state0 = ChemotaxisEnvState(
+        t=jnp.array(0, dtype=jnp.int32),
+        pos=jnp.array([0, 0], dtype=jnp.int32),
+        source_pos=jnp.array([[1, 0]], dtype=jnp.int32),
+        source_is_bad=jnp.array([True], dtype=jnp.bool_),
+        source_active=jnp.array([True], dtype=jnp.bool_),
+        source_respawn_t=jnp.array([0], dtype=jnp.int32),
+        energy=jnp.array(1.0, dtype=jnp.float32),
+        integrity=jnp.array(1.0, dtype=jnp.float32),
+    )
+    dev = DevelopmentState(age_step=jnp.array(0, dtype=jnp.int32), phi=jnp.array(0.0, dtype=jnp.float32))
+
+    # Step onto bad source: take integrity loss, but the bad source remains active (no depletion).
+    state1, _obs1, internal1, log1, done1 = env_step(spec, state0, jnp.array(4, dtype=jnp.int32), dev, jax.random.PRNGKey(0))
+    assert float(jax.device_get(log1.bad_arrivals)) == 1.0
+    assert float(jax.device_get(internal1.integrity)) == 0.75
+    assert bool(jax.device_get(done1)) is False
+    assert bool(jax.device_get(state1.source_active[0])) is True
+    assert int(jax.device_get(state1.source_respawn_t[0])) == 0
+
+    # Step away: gradient should still point back to the active bad source.
+    state2, obs2, _internal2, _log2, _done2 = env_step(spec, state1, jnp.array(3, dtype=jnp.int32), dev, jax.random.PRNGKey(1))
+    assert bool(jax.device_get(state2.source_active[0])) is True
+    assert int(jax.device_get(state2.source_respawn_t[0])) == 0
+    assert abs(float(jax.device_get(obs2[0])) - (1.0 / 7.0)) < 1e-6  # dx=+1, width-1=7
+
+
+def test_bad_source_deplete_p_one_matches_default_depletion() -> None:
+    spec = ChemotaxisEnvSpec(
+        width=8,
+        height=1,
+        max_steps=8,
+        energy_init=1.0,
+        energy_decay=0.0,
+        energy_gain=0.25,
+        terminate_on_reach=False,
+        obs_noise=0.0,
+        num_sources=1,
+        num_bad_sources=1,
+        bad_source_integrity_loss=0.25,
+        source_deplete=True,
+        source_respawn_delay=2,
+        bad_source_deplete_p=1.0,
+    )
+    state0 = ChemotaxisEnvState(
+        t=jnp.array(0, dtype=jnp.int32),
+        pos=jnp.array([0, 0], dtype=jnp.int32),
+        source_pos=jnp.array([[1, 0]], dtype=jnp.int32),
+        source_is_bad=jnp.array([True], dtype=jnp.bool_),
+        source_active=jnp.array([True], dtype=jnp.bool_),
+        source_respawn_t=jnp.array([0], dtype=jnp.int32),
+        energy=jnp.array(1.0, dtype=jnp.float32),
+        integrity=jnp.array(1.0, dtype=jnp.float32),
+    )
+    dev = DevelopmentState(age_step=jnp.array(0, dtype=jnp.int32), phi=jnp.array(0.0, dtype=jnp.float32))
+
+    # Step onto bad source: take integrity loss, and the source depletes (default behavior).
+    state1, _obs1, internal1, log1, done1 = env_step(spec, state0, jnp.array(4, dtype=jnp.int32), dev, jax.random.PRNGKey(0))
+    assert float(jax.device_get(log1.bad_arrivals)) == 1.0
+    assert float(jax.device_get(internal1.integrity)) == 0.75
+    assert bool(jax.device_get(done1)) is False
+    assert bool(jax.device_get(state1.source_active[0])) is False
+    assert int(jax.device_get(state1.source_respawn_t[0])) == 2
+
+    # Step away: still inactive; countdown decrements; gradient stays zero (no active sources).
+    state2, obs2, _internal2, _log2, _done2 = env_step(spec, state1, jnp.array(3, dtype=jnp.int32), dev, jax.random.PRNGKey(1))
+    assert bool(jax.device_get(state2.source_active[0])) is False
+    assert int(jax.device_get(state2.source_respawn_t[0])) == 1
+    assert float(jax.device_get(obs2[0])) == 0.0
+
+
+def test_bad_source_respawn_delay_override() -> None:
+    spec = ChemotaxisEnvSpec(
+        width=8,
+        height=1,
+        max_steps=8,
+        energy_init=1.0,
+        energy_decay=0.0,
+        energy_gain=0.25,
+        terminate_on_reach=False,
+        obs_noise=0.0,
+        num_sources=1,
+        num_bad_sources=1,
+        bad_source_integrity_loss=0.25,
+        source_deplete=True,
+        source_respawn_delay=4,
+        bad_source_respawn_delay=0,
+    )
+    state0 = ChemotaxisEnvState(
+        t=jnp.array(0, dtype=jnp.int32),
+        pos=jnp.array([0, 0], dtype=jnp.int32),
+        source_pos=jnp.array([[1, 0]], dtype=jnp.int32),
+        source_is_bad=jnp.array([True], dtype=jnp.bool_),
+        source_active=jnp.array([True], dtype=jnp.bool_),
+        source_respawn_t=jnp.array([0], dtype=jnp.int32),
+        energy=jnp.array(1.0, dtype=jnp.float32),
+        integrity=jnp.array(1.0, dtype=jnp.float32),
+    )
+    dev = DevelopmentState(age_step=jnp.array(0, dtype=jnp.int32), phi=jnp.array(0.0, dtype=jnp.float32))
+
+    key0 = jax.random.PRNGKey(0)
+    state1, _obs1, internal1, log1, done1 = env_step(spec, state0, jnp.array(4, dtype=jnp.int32), dev, key0)
+
+    assert float(jax.device_get(log1.bad_arrivals)) == 1.0
+    assert float(jax.device_get(internal1.integrity)) == 0.75
+    assert bool(jax.device_get(done1)) is False
+
+    # Bad sources respawn immediately when delay is overridden to 0.
+    rng_respawn, _ = jax.random.split(key0, 2)
+    hi = jnp.array([spec.width, spec.height], dtype=jnp.int32)
+    expected_pos = jax.random.randint(rng_respawn, shape=(1, 2), minval=0, maxval=hi, dtype=jnp.int32)
+
+    assert bool(jax.device_get(state1.source_active[0])) is True
+    assert int(jax.device_get(state1.source_respawn_t[0])) == 0
+    assert bool(jax.device_get(jnp.all(state1.source_pos == expected_pos)))
