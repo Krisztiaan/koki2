@@ -13,3 +13,7 @@ The bootstrap notebook also includes an optional small Stage 1 multi-seed ES + h
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/stage1_l02_bad_sources.ipynb)
 
 Use `colab/stage1_l02_bad_sources.ipynb` for the **Stage 1** L0.2 harmful sources experiment (multi-seed ES + held-out eval), aligned with `WORK.md`.
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/stage1_l10_deplete_bad_sources.ipynb)
+
+Use `colab/stage1_l10_deplete_bad_sources.ipynb` for the **Stage 1** L1.0 deplete/respawn + L0.2 harmful sources experiment (multi-seed ES + held-out eval), aligned with `WORK.md`.

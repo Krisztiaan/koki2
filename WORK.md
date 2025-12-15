@@ -1809,3 +1809,60 @@ Robustness check (second held-out eval seed):
 Interpretation (provisional):
 - At this larger budget, fixed-weight ES **beats the greedy-gradient baseline on held-out fitness** across 5 seeds in L0.2 harmful sources.
 - Consistent with the L0.2 spec warning, this improvement does **not** imply better avoidance: the evolved policies show **more bad arrivals** and **lower integrity minima** than the greedy baseline on the same held-out episode keys.
+
+---
+
+## 2025-12-15 — Stage 1 (A): L1.0 deplete/respawn + L0.2 harmful sources (no plasticity)
+
+Goal: test the thesis expectation that adding **temporal structure** (L1.0 depleting resources) changes the tradeoffs in L0.2 harmful sources and makes “survive safely” strategies more competitive (relative to naive gradient chasing).
+
+Thesis grounding:
+- L1.0 (depleting resources) is intended to encourage exploration and non-trivial policy beyond “always go uphill” (`thesis/12_IMPLEMENTATION_ENVIRONMENT_LADDER_SPEC.md`).
+- L0.2 warns that “avoidance” should be measured (bad arrivals / integrity minima), not inferred from fitness alone (`thesis/12_IMPLEMENTATION_ENVIRONMENT_LADDER_SPEC.md`).
+
+Environment:
+- `--deplete-sources --respawn-delay 4`
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--steps 128`
+
+Baseline scan (seed 0, 512 episodes; log: `runs/stage1_scans/2025-12-15_baseline_scan_l10_deplete_badsrc.txt`):
+```bash
+uv run koki2 baseline-l0 --seed 0 --policy greedy --episodes 512 --steps 128 \
+  --deplete-sources --respawn-delay 4 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25
+uv run koki2 baseline-l0 --seed 0 --policy random --episodes 512 --steps 128 \
+  --deplete-sources --respawn-delay 4 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25
+```
+
+Observed (baseline):
+- greedy: `mean_fitness=129.7090`, `success_rate=0.898`, `mean_t_alive=83.1`, `mean_bad_arrivals=3.3945`, `mean_integrity_min=0.1572`
+- random: `mean_fitness=145.5098`, `success_rate=0.346`, `mean_t_alive=128.0`, `mean_bad_arrivals=0.4102`, `mean_integrity_min=0.8975`
+
+ES (200 generations, pop 128, 8 episodes; seeds 0..4; log: `runs/stage1_scans/2025-12-15_es_l10_deplete_badsrc_big_seed0-4.txt`):
+```bash
+uv run koki2 batch-evo-l0 \
+  --seed-start 0 --seed-count 5 \
+  --out-root runs/stage1_es_big_l10 --tag stage1_l10_deplete_badsrc_g200_p128_ep8 \
+  --generations 200 --pop-size 128 --episodes 8 --steps 128 \
+  --deplete-sources --respawn-delay 4 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --log-every 10
+```
+
+Held-out evaluation (512 episodes, fixed eval seeds; logs):
+- `runs/stage1_scans/2025-12-15_eval_l10_deplete_badsrc_big_seed0-4_evalseed424242.txt`
+- `runs/stage1_scans/2025-12-15_eval_l10_deplete_badsrc_big_seed0-4_evalseed0.txt`
+
+Aggregate (computed from the 5 held-out runs; eval seed 424242):
+- best_genome mean `mean_fitness=164.1209` (baseline random `144.1484`, baseline greedy `130.7910`)
+- best_genome mean `mean_t_alive=126.7000` (baseline greedy `82.5`)
+- best_genome mean `mean_bad_arrivals=1.1879` and `mean_integrity_min=0.7030` (baseline greedy `3.4375` and `0.1416`)
+
+Robustness (eval seed 0; 5 held-out runs):
+- best_genome mean `mean_fitness=162.6670` (baseline random `145.5098`, baseline greedy `129.7090`)
+
+Interpretation (provisional):
+- In this L1.0+L0.2 setting, naive greedy gradient following becomes **high-risk** (many bad arrivals → integrity collapse → early death), and random “low-contact” behavior can outscore greedy on mean fitness by surviving.
+- Fixed-weight ES adapts by substantially reducing hazard contact relative to greedy (higher integrity minima, near-full survival time), consistent with the thesis expectation that temporal structure amplifies survival-weighted strategies.
+- Relative to the random baseline, the evolved policies still accept more hazard contact (lower integrity minima), so “avoidance” remains a separate measured outcome rather than something we can infer from fitness alone.
