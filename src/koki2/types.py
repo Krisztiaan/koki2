@@ -114,6 +114,11 @@ class DevConfig(NamedTuple):
     plast_enabled: bool = False
     plast_eta: float = 0.0
     plast_lambda: float = 0.9
+    # 0: spike-derived modulator (legacy).
+    # 1: drive/reward-derived modulator (drive_delta; consequence-aligned).
+    # 2: event-derived modulator (energy_gained - integrity_lost; consequence-aligned).
+    modulator_kind: int = 0
+    mod_drive_scale: float = 1.0
 
 
 class AgentParams(NamedTuple):
@@ -128,6 +133,8 @@ class AgentParams(NamedTuple):
     plast_enabled: Array  # bool scalar
     plast_eta: Array  # float32 scalar
     plast_lambda: Array  # float32 scalar
+    modulator_kind: Array  # int32 scalar
+    mod_drive_scale: Array  # float32 scalar
 
 
 class AgentState(NamedTuple):

@@ -1245,3 +1245,254 @@ Observed outputs (selected; best-genome only; eval seed 1):
 Interpretation (provisional, but stronger than 10 generations):
 - Across eval seeds 0 and 1, `eta=0.05` remains **higher mean fitness** in 2/3 seeds and increases `mean_abs_dw_mean` in those same seeds, suggesting the effect is not purely a 10-gen fluke.
 - The same trade-off persists: improved success/fitness often comes with worse hazard metrics (higher bad arrivals / lower integrity minima).
+
+---
+
+## 2025-12-15 — Stage 2 hypothesis refinement: consequence-aligned neuromodulation (drive-based modulator)
+
+Goal: align plasticity with the thesis by making the neuromodulatory signal explicitly consequence-driven (drive reduction), rather than only spike-derived. This is intended to reduce the observed “success improves but hazard metrics worsen” pattern by tying learning updates to viability-relevant outcomes.
+
+Changes:
+- `src/koki2/types.py`: added `DevConfig.modulator_kind` (0=spike, 1=drive) and `DevConfig.mod_drive_scale`; added corresponding `AgentParams` fields.
+- `src/koki2/cli.py`: added `--modulator-kind {spike,drive}` and `--mod-drive-scale` to `koki2 evo-l0` so we can run Stage 2 comparisons without changing tensor shapes.
+- `src/koki2/sim/orchestrator.py`: threads a per-step modulator signal through the rollout (`mod_signal`), set to the reward/drive reduction `drive_prev - drive2` each step and fed into the agent on the next step.
+- `src/koki2/agent/snn.py`: if `modulator_kind=drive`, uses a bounded drive signal as modulator; learning updates use the eligibility trace `elig_next` (so the drive signal is strong enough to produce measurable within-life updates under the current dynamics).
+
+Verification:
+- Ran `uv run pytest` (22 tests) — all passing.
+
+### Stage 2 quick experiment: drive-modulated plasticity vs spike-modulated plasticity
+
+Benchmark env: same as earlier Stage 2 runs:
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--deplete-sources --respawn-delay 4`
+- `--grad-dropout-p 0.5`
+- `--steps 128`
+
+ES budget:
+- `--generations 10 --pop-size 64 --episodes 4`
+
+Runs (drive modulator; `eta=0.05`, `mod_drive_scale=2000`; seeds 0/1/2):
+```bash
+for seed in 0 1 2; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_drive_mod2_es10_eta0.05_scale2000_seed${seed} \
+    --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5 \
+    --plast-enabled --plast-eta 0.05 --plast-lambda 0.9 \
+    --modulator-kind drive --mod-drive-scale 2000
+done
+```
+
+Held-out eval (128 episodes; eval seeds 0 and 1):
+```bash
+for eval_seed in 0 1; do
+  for seed in 0 1 2; do
+    uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_drive_mod2_es10_eta0.05_scale2000_seed${seed} \
+      --episodes 128 --seed $eval_seed --baseline-policy none
+  done
+done
+```
+
+Observed outputs (selected; best-genome only):
+- eval seed 0:
+  - seed 0: `mean_fitness=164.7852`, `mean_bad_arrivals=1.0625`, `mean_integrity_min=0.7344`, `mean_abs_dw_mean=0.000232`
+  - seed 1: `mean_fitness=162.5195`, `mean_bad_arrivals=1.2500`, `mean_integrity_min=0.6875`, `mean_abs_dw_mean=0.000131`
+  - seed 2: `mean_fitness=163.6211`, `mean_bad_arrivals=1.3750`, `mean_integrity_min=0.6562`, `mean_abs_dw_mean=0.000281`
+- eval seed 1:
+  - seed 0: `mean_fitness=158.6523`, `mean_bad_arrivals=1.1953`, `mean_integrity_min=0.7012`, `mean_abs_dw_mean=0.000231`
+  - seed 1: `mean_fitness=164.2227`, `mean_bad_arrivals=1.2656`, `mean_integrity_min=0.6836`, `mean_abs_dw_mean=0.000127`
+  - seed 2: `mean_fitness=164.3086`, `mean_bad_arrivals=1.3125`, `mean_integrity_min=0.6719`, `mean_abs_dw_mean=0.000286`
+
+Interpretation (provisional):
+- Drive-modulated plasticity produces **measurable but small** within-life updates (`mean_abs_dw_mean≈2e-4` at this setting), and it does not show the large “risky success” shifts observed with spike-modulated plasticity at the same `eta` (which had much larger `mean_abs_dw_mean`).
+- On this benchmark and tiny ES budget, drive-modulated plasticity appears closer to the non-plastic regime (safer hazard metrics, modest mean fitness changes), suggesting we may need either:
+  - a better-shaped consequence signal (e.g., centering/baselines), or
+  - a different credit-assignment timing (update weights after observing the step’s consequence), or
+  - a more direct consequence proxy (e.g., event-based energy/integrity deltas),
+  to see a clear Stage 2 advantage without hazard regression.
+
+---
+
+## 2025-12-15 — Stage 2 extension: event-based consequence modulator (`event_delta`)
+
+Goal: add a second consequence-derived option that is closer to “direct internal consequences” than drive delta: modulate plasticity by `event_delta = energy_gained - integrity_lost`.
+
+Changes:
+- `src/koki2/types.py`: extended `modulator_kind` semantics: 0=spike, 1=drive_delta, 2=event_delta.
+- `src/koki2/cli.py`: added `--modulator-kind event` (reuses `--mod-drive-scale` to scale the signal).
+- `src/koki2/sim/orchestrator.py`: sets the per-step `mod_signal` based on `modulator_kind`:
+  - drive: `drive_prev - drive2`
+  - event: `env_log.energy_gained - env_log.integrity_lost`
+- `tests/test_agent_plasticity.py`: added a unit test that drive modulation can update weights given a nonzero modulator signal.
+
+Verification:
+- Ran `uv run pytest` (22 tests) — all passing.
+
+Pilot run (event modulator; seed 0 only; benchmark env as above):
+```bash
+uv run koki2 evo-l0 --seed 0 --out-dir runs/2025-12-15_stage2_event_mod_es10_eta0.05_scale4_seed0 \
+  --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+  --deplete-sources --respawn-delay 4 \
+  --grad-dropout-p 0.5 \
+  --plast-enabled --plast-eta 0.05 --plast-lambda 0.9 \
+  --modulator-kind event --mod-drive-scale 4
+
+uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_event_mod_es10_eta0.05_scale4_seed0 \
+  --episodes 128 --seed 0 --baseline-policy none
+```
+
+Observed output (best-genome):
+- `mean_fitness=164.2617`, `mean_bad_arrivals=1.0781`, `mean_integrity_min=0.7305`, `mean_abs_dw_mean=0.000012`
+
+Replication (event modulator; seeds 0/1/2; same env and ES budget; eval seeds 0 and 1):
+```bash
+for seed in 0 1 2; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_event_mod_es10_eta0.05_scale4_seed${seed} \
+    --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5 \
+    --plast-enabled --plast-eta 0.05 --plast-lambda 0.9 \
+    --modulator-kind event --mod-drive-scale 4
+done
+
+for eval_seed in 0 1; do
+  for seed in 0 1 2; do
+    uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_event_mod_es10_eta0.05_scale4_seed${seed} \
+      --episodes 128 --seed $eval_seed --baseline-policy none
+  done
+done
+```
+
+Observed outputs (selected; best-genome only):
+- eval seed 0:
+  - seed 0: `mean_fitness=164.2617`, `mean_bad_arrivals=1.0781`, `mean_integrity_min=0.7305`, `mean_abs_dw_mean=0.000012`
+  - seed 1: `mean_fitness=162.5273`, `mean_bad_arrivals=1.2500`, `mean_integrity_min=0.6875`, `mean_abs_dw_mean=0.000004`
+  - seed 2: `mean_fitness=164.9336`, `mean_bad_arrivals=1.2500`, `mean_integrity_min=0.6875`, `mean_abs_dw_mean=0.000013`
+- eval seed 1:
+  - seed 0: `mean_fitness=158.8164`, `mean_bad_arrivals=1.1641`, `mean_integrity_min=0.7090`, `mean_abs_dw_mean=0.000013`
+  - seed 1: `mean_fitness=164.2227`, `mean_bad_arrivals=1.2656`, `mean_integrity_min=0.6836`, `mean_abs_dw_mean=0.000004`
+  - seed 2: `mean_fitness=165.3828`, `mean_bad_arrivals=1.1562`, `mean_integrity_min=0.7109`, `mean_abs_dw_mean=0.000012`
+
+Interpretation (provisional):
+- With this particular shaping (event delta; `scale=4`), within-life updates remain extremely small on average (`mean_abs_dw_mean≈1e-5`) and behavior is close to the non-plastic regime (good hazard metrics, modest fitness changes).
+
+---
+
+## 2025-12-15 — Stage 2 refinement: same-step consequence modulation (credit timing)
+
+Goal: make consequence-derived modulators (drive/event) arrive in the **same step** as the consequence (after `env_step`), so eligibility traces can bridge action→outcome credit without an extra 1-step delay.
+
+Changes:
+- `src/koki2/agent/snn.py`: split into `agent_forward` (spikes/action/eligibility) and `agent_apply_plasticity` (apply modulated update once the modulator signal is known).
+- `src/koki2/sim/orchestrator.py`: restructure loop to `agent_forward → env_step → mod_signal_raw → agent_apply_plasticity` (no carry of `mod_signal`).
+- `src/koki2/agent/__init__.py`: export the updated agent functions.
+- `tests/test_agent_plasticity.py`: updated to the new API and strengthened the drive-mod test (mod signal `0.5` to disambiguate from spike-mod).
+
+Verification:
+- Ran `uv run pytest` (22 tests) — all passing.
+- Spot-check: re-evaluated an existing spike-modulated plastic run dir and reproduced the previously logged metrics exactly:
+```bash
+uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_es_plast_eta0.05_seed0 --episodes 128 --seed 0 --baseline-policy none
+```
+Observed output (best-genome):
+- `mean_fitness=170.7461`, `mean_bad_arrivals=2.0234`, `mean_integrity_min=0.4941`, `mean_abs_dw_mean=0.002359`
+
+### Stage 2 comparison rerun (timing fix): drive modulator
+
+Benchmark env: same as earlier Stage 2 runs:
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--deplete-sources --respawn-delay 4`
+- `--grad-dropout-p 0.5`
+- `--steps 128`
+
+ES budget:
+- `--generations 10 --pop-size 64 --episodes 4`
+
+Runs (drive modulator; `eta=0.05`, `mod_drive_scale=2000`; seeds 0/1/2):
+```bash
+for seed in 0 1 2; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_drive_mod_timingfix_es10_eta0.05_scale2000_seed${seed} \
+    --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5 \
+    --plast-enabled --plast-eta 0.05 --plast-lambda 0.9 \
+    --modulator-kind drive --mod-drive-scale 2000
+done
+```
+
+Observed `best_fitness`:
+- seed 0: `179.2500`
+- seed 1: `179.5000`
+- seed 2: `179.5000`
+
+Held-out eval (128 episodes; eval seeds 0 and 1):
+```bash
+for eval_seed in 0 1; do
+  for seed in 0 1 2; do
+    uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_drive_mod_timingfix_es10_eta0.05_scale2000_seed${seed} \
+      --episodes 128 --seed $eval_seed --baseline-policy none
+  done
+done
+```
+
+Observed outputs (selected; best-genome only):
+- eval seed 0:
+  - seed 0: `mean_fitness=162.9023`, `mean_bad_arrivals=1.2969`, `mean_integrity_min=0.6758`, `mean_abs_dw_mean=0.000232`
+  - seed 1: `mean_fitness=163.8359`, `mean_bad_arrivals=1.3281`, `mean_integrity_min=0.6680`, `mean_abs_dw_mean=0.000079`
+  - seed 2: `mean_fitness=164.4180`, `mean_bad_arrivals=1.3672`, `mean_integrity_min=0.6582`, `mean_abs_dw_mean=0.000392`
+- eval seed 1:
+  - seed 0: `mean_fitness=162.5820`, `mean_bad_arrivals=1.3828`, `mean_integrity_min=0.6543`, `mean_abs_dw_mean=0.000234`
+  - seed 1: `mean_fitness=166.1484`, `mean_bad_arrivals=1.2344`, `mean_integrity_min=0.6914`, `mean_abs_dw_mean=0.000079`
+  - seed 2: `mean_fitness=163.6289`, `mean_bad_arrivals=1.3672`, `mean_integrity_min=0.6582`, `mean_abs_dw_mean=0.000405`
+
+Interpretation (provisional):
+- Under this setting, same-step drive modulation does not materially change the earlier finding that consequence-derived plasticity stays close to the non-plastic regime: `mean_abs_dw_mean` remains small (`~8e-5` to `~4e-4`) and held-out hazard metrics are in the same range as the non-plastic baselines.
+
+### Stage 2 comparison rerun (timing fix): event modulator
+
+Runs (event modulator; `eta=0.05`, `scale=4`; seeds 0/1/2):
+```bash
+for seed in 0 1 2; do
+  uv run koki2 evo-l0 --seed $seed --out-dir runs/2025-12-15_stage2_event_mod_timingfix_es10_eta0.05_scale4_seed${seed} \
+    --generations 10 --pop-size 64 --episodes 4 --steps 128 \
+    --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 \
+    --deplete-sources --respawn-delay 4 \
+    --grad-dropout-p 0.5 \
+    --plast-enabled --plast-eta 0.05 --plast-lambda 0.9 \
+    --modulator-kind event --mod-drive-scale 4
+done
+```
+
+Observed `best_fitness`:
+- seed 0: `179.2500`
+- seed 1: `179.5000`
+- seed 2: `179.3750`
+
+Held-out eval (128 episodes; eval seeds 0 and 1):
+```bash
+for eval_seed in 0 1; do
+  for seed in 0 1 2; do
+    uv run koki2 eval-run --run-dir runs/2025-12-15_stage2_event_mod_timingfix_es10_eta0.05_scale4_seed${seed} \
+      --episodes 128 --seed $eval_seed --baseline-policy none
+  done
+done
+```
+
+Observed outputs (selected; best-genome only):
+- eval seed 0:
+  - seed 0: `mean_fitness=156.5938`, `mean_bad_arrivals=1.1406`, `mean_integrity_min=0.7148`, `mean_abs_dw_mean=0.000012`
+  - seed 1: `mean_fitness=164.1250`, `mean_bad_arrivals=1.3125`, `mean_integrity_min=0.6719`, `mean_abs_dw_mean=0.000004`
+  - seed 2: `mean_fitness=163.8125`, `mean_bad_arrivals=1.3359`, `mean_integrity_min=0.6660`, `mean_abs_dw_mean=0.000028`
+- eval seed 1:
+  - seed 0: `mean_fitness=156.3750`, `mean_bad_arrivals=1.1953`, `mean_integrity_min=0.7012`, `mean_abs_dw_mean=0.000012`
+  - seed 1: `mean_fitness=164.7852`, `mean_bad_arrivals=1.2656`, `mean_integrity_min=0.6836`, `mean_abs_dw_mean=0.000004`
+  - seed 2: `mean_fitness=165.0703`, `mean_bad_arrivals=1.2188`, `mean_integrity_min=0.6953`, `mean_abs_dw_mean=0.000026`
+
+Interpretation (provisional):
+- Event-based modulation still produces extremely small average applied updates (`mean_abs_dw_mean≈1e-5` to `3e-5` at `scale=4`), and most runs remain close to the non-plastic regime.
+- One seed shows a lower-fitness but “safer”-looking pattern (higher `mean_integrity_min`, lower `mean_bad_arrivals`) that could be real or could be an ES-budget artifact; it needs replication and a more systematic scale sweep before treating it as evidence.

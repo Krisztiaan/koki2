@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from koki2.agent.heuristic import greedy_gradient_action
-from koki2.agent.snn import agent_init, agent_step
+from koki2.agent.snn import agent_apply_plasticity, agent_forward, agent_init
 from koki2.envs.chemotaxis import env_init, env_step
 from koki2.genome.direct import DirectGenome, develop
 from koki2.types import (
@@ -101,14 +101,23 @@ def simulate_lifetime(
         rng_agent, rng_env = jax.random.split(step_key, 2)
 
         def do(_):
-            agent_state2, action, agent_log = agent_step(
-                params, agent_state, obs, internal, dev_state, rng_agent
-            )
+            fwd = agent_forward(params, agent_state, obs, internal, dev_state, rng_agent)
             env_state2, obs2, internal2, env_log, done = env_step(
-                env_spec, env_state, action, dev_state, rng_env
+                env_spec, env_state, fwd.action, dev_state, rng_env
             )
             drive2 = drive(internal2, sim_cfg)
             _reward = drive_prev - drive2
+            event_delta = env_log.energy_gained - env_log.integrity_lost
+            mod_signal_raw = jnp.where(
+                params.modulator_kind == jnp.array(1, dtype=jnp.int32),
+                _reward,
+                jnp.where(
+                    params.modulator_kind == jnp.array(2, dtype=jnp.int32),
+                    event_delta,
+                    jnp.array(0.0, dtype=jnp.float32),
+                ),
+            )
+            agent_state2, agent_log = agent_apply_plasticity(params, agent_state, fwd, mod_signal_raw)
 
             energy_gained_total2 = energy_gained_total + env_log.energy_gained
             bad_arrivals_total2 = bad_arrivals_total + env_log.bad_arrivals
@@ -117,7 +126,7 @@ def simulate_lifetime(
             t_alive2 = t_alive + jnp.array(1, dtype=jnp.int32)
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
-            action_counts2 = action_counts.at[action].add(jnp.array(1.0, dtype=jnp.float32))
+            action_counts2 = action_counts.at[fwd.action].add(jnp.array(1.0, dtype=jnp.float32))
             dw_sum2 = dw_sum + agent_log.mean_abs_dw
 
             return (

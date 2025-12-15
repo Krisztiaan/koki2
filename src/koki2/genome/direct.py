@@ -29,6 +29,8 @@ def make_dev_config(
     plast_enabled: bool = False,
     plast_eta: float = 0.0,
     plast_lambda: float = 0.9,
+    modulator_kind: int = 0,
+    mod_drive_scale: float = 1.0,
 ) -> DevConfig:
     if n_neurons < 1:
         raise ValueError("n_neurons must be >= 1")
@@ -59,6 +61,8 @@ def make_dev_config(
         plast_enabled=plast_enabled,
         plast_eta=plast_eta,
         plast_lambda=plast_lambda,
+        modulator_kind=int(modulator_kind),
+        mod_drive_scale=float(mod_drive_scale),
     )
 
 
@@ -93,4 +97,6 @@ def develop(genome: DirectGenome, dev_cfg: DevConfig, rng: Array) -> AgentParams
         plast_enabled=jnp.array(dev_cfg.plast_enabled, dtype=jnp.bool_),
         plast_eta=jnp.array(dev_cfg.plast_eta, dtype=jnp.float32),
         plast_lambda=jnp.array(dev_cfg.plast_lambda, dtype=jnp.float32),
+        modulator_kind=jnp.array(dev_cfg.modulator_kind, dtype=jnp.int32),
+        mod_drive_scale=jnp.array(dev_cfg.mod_drive_scale, dtype=jnp.float32),
     )

@@ -3,7 +3,7 @@ import math
 import jax
 import jax.numpy as jnp
 
-from koki2.agent.snn import agent_step
+from koki2.agent.snn import agent_apply_plasticity, agent_forward
 from koki2.types import AgentParams, AgentState, DevelopmentState, InternalState
 
 
@@ -24,6 +24,8 @@ def _make_params(*, plast_enabled: bool, plast_eta: float) -> AgentParams:
         plast_enabled=jnp.array(plast_enabled, dtype=jnp.bool_),
         plast_eta=jnp.array(plast_eta, dtype=jnp.float32),
         plast_lambda=jnp.array(0.9, dtype=jnp.float32),
+        modulator_kind=jnp.array(0, dtype=jnp.int32),
+        mod_drive_scale=jnp.array(1.0, dtype=jnp.float32),
     )
 
 
@@ -39,7 +41,8 @@ def test_plasticity_disabled_keeps_state_and_logs_zero_dw() -> None:
     internal = InternalState(energy=jnp.array(1.0, dtype=jnp.float32), integrity=jnp.array(1.0, dtype=jnp.float32))
     dev = DevelopmentState(age_step=jnp.array(0, dtype=jnp.int32), phi=jnp.array(0.0, dtype=jnp.float32))
 
-    state2, _action, log = agent_step(params, state, obs, internal, dev, jax.random.PRNGKey(0))
+    fwd = agent_forward(params, state, obs, internal, dev, jax.random.PRNGKey(0))
+    state2, log = agent_apply_plasticity(params, state, fwd, jnp.array(0.0, dtype=jnp.float32))
 
     assert float(jax.device_get(state2.w[0])) == float(jax.device_get(state.w[0]))
     assert float(jax.device_get(state2.elig[0])) == float(jax.device_get(state.elig[0]))
@@ -58,10 +61,33 @@ def test_plasticity_enabled_updates_weights_and_logs_dw() -> None:
     internal = InternalState(energy=jnp.array(1.0, dtype=jnp.float32), integrity=jnp.array(1.0, dtype=jnp.float32))
     dev = DevelopmentState(age_step=jnp.array(0, dtype=jnp.int32), phi=jnp.array(0.0, dtype=jnp.float32))
 
-    state2, _action, log = agent_step(params, state, obs, internal, dev, jax.random.PRNGKey(0))
+    fwd = agent_forward(params, state, obs, internal, dev, jax.random.PRNGKey(0))
+    state2, log = agent_apply_plasticity(params, state, fwd, jnp.array(0.0, dtype=jnp.float32))
 
     expected_dw = 0.5 * math.tanh(1.0)  # elig_next==1 in this constructed case
     assert abs(float(jax.device_get(state2.w[0])) - expected_dw) < 1e-6
     assert float(jax.device_get(state2.elig[0])) == 1.0
     assert abs(float(jax.device_get(log.mean_abs_dw)) - expected_dw) < 1e-6
 
+
+def test_drive_modulator_updates_weights_from_mod_signal() -> None:
+    params = _make_params(plast_enabled=True, plast_eta=0.5)._replace(
+        modulator_kind=jnp.array(1, dtype=jnp.int32), mod_drive_scale=jnp.array(1.0, dtype=jnp.float32)
+    )
+    state = AgentState(
+        v=jnp.zeros((2,), dtype=jnp.float32),
+        spike=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        w=jnp.zeros((1,), dtype=jnp.float32),
+        elig=jnp.zeros((1,), dtype=jnp.float32),
+    )
+    obs = jnp.array([1.0], dtype=jnp.float32)
+    internal = InternalState(energy=jnp.array(1.0, dtype=jnp.float32), integrity=jnp.array(1.0, dtype=jnp.float32))
+    dev = DevelopmentState(age_step=jnp.array(0, dtype=jnp.int32), phi=jnp.array(0.0, dtype=jnp.float32))
+
+    fwd = agent_forward(params, state, obs, internal, dev, jax.random.PRNGKey(0))
+    mod_signal = jnp.array(0.5, dtype=jnp.float32)
+    state2, log = agent_apply_plasticity(params, state, fwd, mod_signal)
+
+    expected_dw = 0.5 * math.tanh(0.5)  # drive-modulated; elig_next==1 in this constructed case
+    assert abs(float(jax.device_get(state2.w[0])) - expected_dw) < 1e-6
+    assert abs(float(jax.device_get(log.mean_abs_dw)) - expected_dw) < 1e-6

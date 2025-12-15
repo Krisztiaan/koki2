@@ -86,6 +86,19 @@ def _build_parser() -> argparse.ArgumentParser:
     evo.add_argument("--plast-enabled", action="store_true", default=False, help="Enable within-life plasticity (Stage 2).")
     evo.add_argument("--plast-eta", type=float, default=0.0, help="Plasticity learning rate (only if --plast-enabled).")
     evo.add_argument("--plast-lambda", type=float, default=0.9, help="Eligibility trace decay in [0, 1] (only if --plast-enabled).")
+    evo.add_argument(
+        "--modulator-kind",
+        type=str,
+        default="spike",
+        choices=["spike", "drive", "event"],
+        help="Neuromodulator source for plasticity: spike-derived (legacy) or consequence-derived (drive/event).",
+    )
+    evo.add_argument(
+        "--mod-drive-scale",
+        type=float,
+        default=1.0,
+        help="Scale applied to the drive/reward modulator signal (only if --modulator-kind=drive).",
+    )
 
     evo.add_argument("--episodes", type=int, default=4)
     evo.add_argument("--pop-size", type=int, default=64)
@@ -161,6 +174,7 @@ def main(argv: list[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
 
     if args.cmd == "evo-l0":
+        mod_kind = {"spike": 0, "drive": 1, "event": 2}[args.modulator_kind]
         topology_seed = args.topology_seed if args.topology_seed is not None else args.seed + 12345
         energy_decay = args.energy_decay if args.energy_decay is not None else (args.energy_init / max(args.steps, 1))
         num_sources = max(int(args.num_sources), 1)
@@ -202,6 +216,8 @@ def main(argv: list[str] | None = None) -> None:
             plast_enabled=bool(args.plast_enabled),
             plast_eta=max(float(args.plast_eta), 0.0),
             plast_lambda=float(jnp.clip(jnp.array(args.plast_lambda, dtype=jnp.float32), 0.0, 1.0)),
+            modulator_kind=mod_kind,
+            mod_drive_scale=float(args.mod_drive_scale),
         )
         sim_cfg = SimConfig(
             fitness_alpha=args.fitness_alpha,
@@ -363,6 +379,8 @@ def main(argv: list[str] | None = None) -> None:
             plast_enabled=bool(dev["plast_enabled"]),
             plast_eta=float(dev["plast_eta"]),
             plast_lambda=float(dev["plast_lambda"]),
+            modulator_kind=int(dev.get("modulator_kind", 0)),
+            mod_drive_scale=float(dev.get("mod_drive_scale", 1.0)),
         )
 
         data_path = run_dir / "best_genome.npz"
