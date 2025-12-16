@@ -1,271 +1,72 @@
 # PLAN (living) — koki2 thesis research implementation
 
-This is the working execution plan for building the thesis-aligned research project in incremental, verifiable stages.
+This plan starts after checkpoint `stage1_l10_grid`.
+- Archived snapshot: `PLAN_stage1_l10_grid.md`, `WORK_stage1_l10_grid.md`
+- Repo: `https://github.com/Krisztiaan/koki2`
 
 Guiding principles:
-- **Incremental gates:** each stage adds one major capability and has explicit acceptance tests (`thesis/18_EXPERIMENTS_AND_MILESTONES.md`).
-- **Determinism-first:** every new mechanism must preserve reproducible rollouts and stable `jit`.
-- **Local-first:** keep workloads small enough to iterate quickly on the current MacBook; scale out only after correctness is locked in.
+- Determinism-first; keep shapes static under `jax.jit`.
+- Record every substantive change in `WORK.md` (with commands + log paths).
+- Do not invent numbers; cite concrete files (logs/JSONL) for any claims.
+- Keep Colab notebooks output-free; use **File → Save a copy in Drive** when running in Colab.
 
 ---
 
-## 0. Environment + tooling
+## Current stage gate
 
-This repo pins Python 3.12 via `.python-version` (the system Python may differ). We use `uv` + a local venv:
+Stage 2 — Plasticity sanity and benefits (`thesis/18_EXPERIMENTS_AND_MILESTONES.md`).
 
-```bash
-uv python install 3.12
-uv venv --python 3.12
-UV_LINK_MODE=copy uv pip install -e '.[dev]'
-uv run pytest
-```
-
-Notes:
-- `uv python install 3.12`: ensures a 3.12 interpreter exists for this project (independent of system Python).
-- `uv venv --python 3.12`: creates `.venv/` and binds it to that interpreter (reproducible across machines).
-- `uv pip install -e '.[dev]'`: installs the project in editable mode plus dev deps (tests, lint tooling).
-- `UV_LINK_MODE=copy`: avoids hardlinks/symlinks edge cases on some filesystems and makes the venv more “portable”.
+Goal:
+- Show plastic agents outperform fixed-weight agents on L1 tasks (noise/depletion/partial observability) while staying stable (no NaNs), with fair held-out evaluation and reporting “plasticity usage”.
 
 ---
 
-## 1. Current status (snapshot)
+## Stage 2 protocol (baseline)
 
-	Implemented (verified by unit tests):
-	- Stage 0: deterministic rollouts + JIT sanity tests (`tests/test_stage0_determinism.py`)
-		- Stage 1: L0 chemotaxis env suite + baseline harness + minimal OpenAI-ES loop (`koki2 evo-l0`, `koki2 baseline-l0`)
-		  - L0.2: multi-source support (`--num-sources`)
-		  - L0.2 variant: positive+negative sources via integrity loss (`--num-bad-sources`, `--bad-source-integrity-loss`)
-		  - L1.0: optional deplete/respawn temporal structure (`--deplete-sources`, `--respawn-delay`)
-		  - L1.1 (partial): intermittent gradient sensing via `--grad-dropout-p` (no shape changes)
-		  - Evaluation: `koki2 eval-run` (evaluate `best_genome.npz` on held-out episodes + compare to baselines)
-	- Stage 4 (partial): nursing sub-mechanism for **developmental sensory gating + resolution** in L0 (`src/koki2/envs/chemotaxis.py`, `src/koki2/nursing/schedules.py`)
-	- Stage 5 (partial): **MVT viability filtering** for ES (action entropy + alive steps + energy gained) (`src/koki2/evo/openai_es.py`)
+Environment (L1.0 + L0.2 hazards + L1.1 intermittent gradient):
+- `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+- `--deplete-sources --respawn-delay 4`
+- Hazard persistence knob (amplify avoidance pressure): `--bad-source-respawn-delay 0`
+  - Keep `--bad-source-deplete-p 1.0` to avoid the known “camp on non-depleting hazard” confound.
+- Partial observability: `--grad-dropout-p 0.5`
+- Horizon/effect size: `--steps 256`
+- Shaping axis:
+  - Default: `--success-bonus 50`
+  - Ablation: `--success-bonus 0` (treated as an explicit experimental axis, not a post-hoc tweak)
 
-	Not implemented yet (planned):
-	- Plasticity-enabled agents (eligibility traces, modulators) and comparisons (Stage 2)
-	- CPPN/rule genome compiler + bottleneck scaling experiments (Stage 3)
-	- L1+ environments beyond L1.1 (obstacles, richer partial observability) and the full L2/L3 ladder (homeostasis, threats) (Stages 2,6,7 depend on these)
-	- Multi-fidelity rungs beyond MVT + novelty safeguards (Stage 5)
+Compute:
+- Local sanity runs: ES30 `--generations 30 --pop-size 64 --episodes 4 --jit-es`
+- Scale-up runs (Colab): ES100+ and/or more seeds once the protocol is stable
 
----
-
-## 2. Runbook (small local workloads)
-
-### 2.0 Baseline checks (fast)
-
-Compare simple baselines before/after changes:
-
-```bash
-uv run koki2 baseline-l0 --policy greedy --episodes 32
-uv run koki2 baseline-l0 --policy random --episodes 32
-uv run koki2 baseline-l0 --policy stay --episodes 32
-```
-
-### 2.1 Tiny ES smoke test (fast)
-
-```bash
-uv run koki2 evo-l0 --generations 5 --pop-size 64 --steps 128
-```
-
-	Artifacts:
-	- `runs/<timestamp>_evo-l0_seed<seed>/config.json`
-	- `runs/<timestamp>_evo-l0_seed<seed>/generations.jsonl`
-	- `runs/<timestamp>_evo-l0_seed<seed>/best_genome.npz`
-	- `runs/<timestamp>_evo-l0_seed<seed>/manifest.json`
-
-### 2.1.1 Evaluate a saved run directory (recommended)
-
-ES reports `best_fitness` on its small training objective (`--episodes`, often 4). For interpretation and comparisons, evaluate the saved `best_genome.npz` on more episodes and report hazard metrics too:
-
-```bash
-uv run koki2 eval-run --run-dir runs/<timestamp>_evo-l0_seed<seed> --episodes 64 --seed 0 --baseline-policy greedy
-```
-
-### 2.2 Sensory gating experiments (L0)
-
-Example: start with coarse/low-gain gradient sensing, mature to full precision:
-
-```bash
-uv run koki2 evo-l0 \
-  --grad-gain-min 0.0 --grad-gain-max 1.0 --grad-gain-start-phi 0.0 --grad-gain-end-phi 0.3 \
-  --grad-bins-min 2   --grad-bins-max 16  --grad-bins-start-phi 0.0 --grad-bins-end-phi 0.6
-```
-
-### 2.3 MVT (viability filtering) experiments
-
-```bash
-uv run koki2 evo-l0 --mvt --mvt-steps 64 --mvt-episodes 2 --mvt-min-alive-steps 32
-```
-
-Diagnostics to watch:
-- `mvt_pass_rate` in `generations.jsonl`
-- whether best fitness improves with/without MVT at fixed compute
-
-### 2.4 L0.2 and L1.0 variants (quick toggles)
-
-Harmful sources (integrity loss on arrival):
-
-```bash
-uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
-  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25
-```
-
-Control: make the gradient point only to good sources (informative cue; removes consequence-driven discrimination pressure):
-
-```bash
-uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
-  --num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25 --good-only-gradient
-```
-
-	Deplete/respawn (temporal structure):
-
-	```bash
-	uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 \
-	  --deplete-sources --respawn-delay 4
-	```
-
-	Intermittent gradient (partial observability; L1.1):
-
-	```bash
-	uv run koki2 baseline-l0 --policy greedy --episodes 64 --steps 128 --grad-dropout-p 0.5
-	```
-
-### 2.5 Burst benchmarking on a temporary RunPod pod (tear-down by default)
-
-This repo is local-first, but for occasional throughput checks you can spin up a short-lived GPU pod, run a batch command, pull back artifacts, and tear the pod down automatically:
-
-```bash
-tools/runpod_burst_bench.sh --gpu-type 'NVIDIA GeForce RTX 3090' \
-  --image 'runpod/pytorch:2.1.0-py3.10-cuda12.1.0-devel-ubuntu22.04' \
-  --fetch runs \
-  -- uv run koki2 batch-evo-l0 --seed-count 3 --generations 50 --jit-es
-```
-
-Artifacts are downloaded under `runs/runpod_burst/` along with `manifest.txt` and the remote stdout/stderr log.
+Evaluation (required for interpretation):
+- Always evaluate saved `best_genome.npz` via `koki2 eval-run` on held-out episodes (>=512).
+- Use at least two eval seeds (e.g., 424242 and 0) and report per-seed summaries.
+- Always report:
+  - `mean_fitness`, `success_rate`, `mean_t_alive`
+  - `mean_bad_arrivals`, `mean_integrity_min`
+  - `mean_abs_dw_mean` (to verify the run is meaningfully plastic)
+- Compare against baselines (`koki2 baseline-l0 --policy greedy/random`) on the same eval seeds/episodes.
 
 ---
 
-## 3. Incremental stage plan (dev + tests + verification)
+## Work items (next)
 
-The stage names align with `thesis/18_EXPERIMENTS_AND_MILESTONES.md`.
-
-### Stage 0 — Infrastructure and determinism (done)
-
-Acceptance checks:
-- `uv run pytest -k stage0`
-- `jit` and eager match for `simulate_lifetime`
-
-### Stage 1 — L0 baseline competence (in progress)
-
-Goal: reliable improvement over random baselines across seeds.
-
-Next dev tasks (incremental):
-- Keep a repeatable multi-seed acceptance workflow (ES vs baselines across ≥3 seeds) and record results in `WORK.md`.
-- Standardize evaluation to reduce misinterpretation: evaluate saved `best_genome.npz` on held-out episodes (e.g., 64/128/256) and report hazard metrics (bad arrivals, integrity minima), not just `best_fitness`.
-- Add a throughput micro-benchmark (steps/sec) to detect regressions (local CPU).
-
-Latest checks (2025-12-15; see `WORK.md` for full commands/output):
-- L0.2 harmful sources (no deplete): mean best-genome held-out `mean_fitness=164.2683` (eval seed 424242), `mean_fitness=164.1002` (eval seed 0).
-- L1.0 deplete/respawn + L0.2 harmful sources (`--deplete-sources --respawn-delay 4`): mean best-genome held-out `mean_fitness=164.1209` (eval seed 424242), `mean_fitness=162.6670` (eval seed 0).
-
-Acceptance checks:
-- Across ≥3 seeds, best fitness improves over initial/random baseline.
-- No JAX shape instability when toggling nursing/MVT options.
-
-### Stage 2 — Plasticity sanity and benefits (in progress)
-
-Goal: demonstrate that within-life plasticity helps in L1 (noise/depletion/partial observability).
-
-Done:
-- Exposed plasticity knobs on the CLI (`--plast-enabled`, `--plast-eta`, `--plast-lambda`) and recorded them in manifests for replay.
-- Added consequence-aligned neuromodulation as a tunable primitive (`--modulator-kind {spike,drive,event}` with drive/event-derived signals).
-- Added focused unit tests for plasticity gating (disabled ⇒ no weight/trace updates; enabled ⇒ bounded updates) and rollout stability (`isfinite`).
-- Added reporting for plasticity usage (`mean_abs_dw_mean`) so “plastic runs” can be checked for actually applying within-life updates.
-- Pre-registered and ran a small comparison protocol: multi-seed ES runs with/without plasticity on L1.0/L1.1 variants; evaluate saved `best_genome.npz` via `koki2 eval-run` on held-out episodes.
-
-Latest checks (2025-12-15; see `WORK.md` for full commands/output):
-- L1.0 deplete/respawn + L1.1 intermittent gradients (`--grad-dropout-p 0.5`), ES30 × seeds 0..4, held-out 512 episodes:
-  - no-plastic mean `mean_fitness=163.9111` (eval seed 424242)
-  - plastic (spike mod; `--plast-eta 0.05`) mean `mean_fitness=167.2271` (eval seed 424242)
-  - plastic improves held-out mean fitness, but worsens hazard-contact metrics (more bad arrivals, lower integrity minima) in the same benchmark.
-
-Acceptance checks:
-- Plastic agents outperform fixed-weight agents on L1 across seeds (pre-registered metrics).
-- Plasticity does not destabilize rollouts (no NaNs; bounded internal states).
-
-### Stage 3 — Genomic bottleneck scaling (planned)
-
-Goal: swap direct weight encoding for CPPN/rule encoding and evaluate scaling.
-
-Dev tasks:
-- Add genome compiler module (CPPN → sparse edges + rule parameters).
-- Add deterministic “develop(genome)” tests (same genome/seed → same phenotype).
-- Run scaling sweep over N/E for direct vs bottleneck.
-
-Acceptance checks:
-- Comparable (or better) performance at larger N vs direct baseline.
-- Mutation robustness improves (lower catastrophic failure rate).
-
-### Stage 4 — Nursing integration (partial, planned to extend)
-
-Goal: integrate DevelopmentState schedules beyond sensory gating (motor gating, resource/hazard schedules, plasticity schedules).
-
-Dev tasks:
-- Standardize schedule utilities and ensure all schedules are shape-static.
-- Add ablations toggling each nursing factor independently.
-
-Acceptance checks:
-- MVT pass rate improves under nursing (but adult performance does not collapse).
-- Evidence of “Goldilocks” regime (too weak/too strong both worse).
-
-### Stage 5 — Pruning and multi-fidelity (partial, planned to extend)
-
-Goal: add rungs beyond MVT and novelty safeguards without biasing results.
-
-Dev tasks:
-- Add rung-1 proxy evaluation and promotion policy.
-- Add novelty descriptor + archive (MAP-Elites-ish or novelty quota).
-
-Acceptance checks:
-- Compute savings measurable at fixed budget.
-- Final performance not degraded; diversity preserved.
+1. Pre-register the Stage 2 run matrix in `WORK.md` (before running anything):
+   - no-plastic vs plastic
+   - plastic variants: `--modulator-kind {spike,drive,event}` and a small `--plast-eta` grid (hold `--plast-lambda` fixed)
+   - keep env + compute fixed except where explicitly ablated (e.g., success-bonus)
+2. Run a small local sweep (few seeds) to sanity-check:
+   - plasticity usage isn’t effectively zero (`mean_abs_dw_mean` not ~0)
+   - rollouts remain stable (no NaNs; no tracer leaks)
+3. Scale the sweep budgets on Colab (more generations and/or more seeds), keeping Colab notebooks in sync:
+   - add a dedicated notebook under `colab/` for this Stage 2 protocol
+4. Analyze results and decide next move:
+   - if plastic improves fitness but worsens hazard contact, treat modulator kind + eta as the primary knobs to test first
 
 ---
 
-## 4. Verification workflow (what we run before scaling up)
+## Verification checklist (before saying “done”)
 
-Per PR-sized change:
-1. `uv run pytest`
-2. A tiny ES smoke run (few generations) to catch tracing/shape regressions.
-   - Prefer `--jit-es` when testing GPU/backends to avoid per-generation host sync overhead.
-   - For multi-seed sanity checks, prefer `koki2 batch-evo-l0` to amortize compilation.
-3. If touching determinism or RNG: rerun `tests/test_stage0_determinism.py`.
-4. If touching JAX/jit structure: check `tests/test_jax_discipline.py` for tracer leaks/recompile guards.
-
-Before moving to distributed/GPU:
-- Freeze a small set of “golden” configs + seeds and verify exact-match metrics on the laptop.
-- Add a minimal benchmark script and record baseline throughput on CPU.
-
----
-
-## 5. Experiment matrix (near-term, thesis-relevant)
-
-Sensory gating × MVT (L0, fixed compute budget):
-- Baseline: no gating, no MVT
-- Gating only: vary (gain schedule, bins schedule)
-- MVT only: vary thresholds to measure false negatives
-- Gating + MVT: test whether gating reduces false negatives and improves search throughput
-
-Primary metrics:
-- best/median fitness per generation
-- MVT pass rate
-- action entropy + mode fraction
-- compute proxy: rollouts evaluated per wall-clock second (local)
-
----
-
-## 6. Open questions to resolve with you (before next implementation sprint)
-
-1. For L0.2 positive+negative: should we add an explicit “hazard smell” channel (nursing-scheduled cue strength), or keep valence ambiguity until L1.1?
-2. Do we want sensory gating to remain an **environment-side nursing** factor only, or also become an **agent-evolvable developmental program** (genome controls schedule parameters)?
-3. Next L1 pressure to prioritize: observation noise/intermittency, or simple obstacles?
+- `uv run pytest`
+- If new env dynamics / rollout logic are added: eager vs `jax.jit` parity is covered (add a focused test if not).
+- For notebooks: outputs/execution counts stripped (pytest enforces this).
