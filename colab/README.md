@@ -29,3 +29,7 @@ Use `colab/stage2_l11_plastic_vs_noplast.ipynb` for the **Stage 2** comparison: 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/stage2_l11_modulator_grid.ipynb)
 
 Use `colab/stage2_l11_modulator_grid.ipynb` for the **Stage 2** modulator grid (spike vs drive vs event; small `plast_eta` grid) on the stronger-hazard L1.0+L1.1 setup (`--steps 256`, `--bad-source-respawn-delay 0`), aligned with `WORK.md`.
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Krisztiaan/koki2/blob/main/colab/stage2_l11_hazard_persistence_eta0_controls.ipynb)
+
+Use `colab/stage2_l11_hazard_persistence_eta0_controls.ipynb` for the **Stage 2** hazard-persistence follow-up (`bad_source_deplete_p < 1`) with an `--override-plast-eta 0.0` evaluation probe to test whether within-life learning is causally contributing.

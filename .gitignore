@@ -20,3 +20,6 @@ __pycache__/
 runs/
 artifacts/
 checkpoints/
+
+# Thesis generation byproducts
+thesis/references.txt

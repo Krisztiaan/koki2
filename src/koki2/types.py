@@ -196,6 +196,9 @@ class FitnessSummary(NamedTuple):
     action_entropy: Array
     action_mode_frac: Array
     mean_abs_dw_mean: Array
+    mean_abs_modulator_mean: Array
+    mean_abs_dw_on_event: Array
+    event_step_frac: Array
 
 
 class MVTConfig(NamedTuple):

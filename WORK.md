@@ -160,3 +160,126 @@ Next step (new prereg needed before changing axes):
 - Decide whether Stage 2’s next objective is:
   A) “demonstrate plasticity helps” (then prioritize *eliciting non-trivial* drive/event plasticity via a `--mod-drive-scale` sweep and/or eligibility redesign), or
   B) “compare strains under fixed compute” (then scale A0 vs A2/A3 budgets/seeds and keep reporting `mean_abs_dw_mean` as a guardrail).
+
+---
+
+## 2025-12-16 — Stage 2 follow-up: measure sparse event-gated plasticity usage (re-eval scale-up)
+
+Goal:
+- Resolve the ambiguity from the scale-up: drive/event modulators had very small `mean_abs_dw_mean`, which could mean “effectively non-plastic” *or* “plasticity happens on rare event steps and gets diluted by averaging over all steps”.
+
+Changes (code):
+- Extended the rollout summary (`FitnessSummary`) to report additional plasticity diagnostics:
+  - `mean_abs_modulator_mean` (average modulator magnitude; gated by `plast_enabled`)
+  - `mean_abs_dw_on_event` (average |Δw| on **event** steps only)
+  - `event_step_frac` (fraction of alive steps that are events: `energy_gained != 0` or `integrity_lost != 0`)
+- Updated CLI printing so `koki2 eval-run` and `koki2 baseline-l0` emit these fields for notebook parsing.
+
+Verification:
+- `uv run pytest`
+
+Re-evaluation (same runs; 512 episodes; eval seeds 424242 and 0; includes new diagnostics):
+- `runs/stage2_scans/2025-12-16_stage2_scale_eval_steps256_badresp0_succ50_ep512_plastmetrics.jsonl`
+
+Results (n=5 ES seeds per condition; mean ± stdev; from JSONL above):
+- Event frequency is low in this setup: `event_step_frac ≈ 0.012–0.015` (≈1–1.5% of alive steps).
+- A2 drive (eta=0.05, scale=1.0):
+  - `mean_abs_dw_mean ≈ 5.23e-06±4.70e-06` (diluted over all steps)
+  - `mean_abs_dw_on_event ≈ 1.11e-04±9.86e-05`
+  - `mean_abs_modulator_mean ≈ 4.75e-03±3.47e-04`
+- A3 event (eta=0.05):
+  - `mean_abs_dw_mean ≈ 2.42e-06±1.38e-06` (diluted over all steps)
+  - `mean_abs_dw_on_event ≈ 1.87e-04±1.08e-04`
+  - `mean_abs_modulator_mean ≈ 1.96e-03±5.36e-04`
+- A1 spike (eta=0.05) remains “dense” in comparison:
+  - `mean_abs_dw_mean ≈ 1.43e-02±1.82e-02`
+  - `mean_abs_modulator_mean ≈ 2.35e-01±1.28e-01`
+
+Interpretation (still provisional; this resolves a measurement issue but not causality):
+- Drive/event modulators are **not** “effectively non-plastic” here — they produce sparse, consequence-aligned weight updates concentrated on rare event steps; `mean_abs_dw_mean` was small primarily because events are rare.
+- We still do **not** know whether the observed fitness/hazard improvements under drive/event are *caused by* within-life learning versus ES variance; the next step is an explicit `plast_eta=0` control sweep under the same protocol/budget.
+
+---
+
+## 2025-12-16 — Stage 2 prereg: eta=0 causality controls + bigger-budget replication (same stronger-hazard L1.0+L1.1)
+
+Goal:
+- Strengthen the Stage 2 claim (“plasticity helps”) while avoiding flukes by:
+  1) Running an explicit **no-learning control** (`plast_eta=0`) for consequence-aligned modulators, and
+  2) Scaling seeds/budget to make the comparison more decisive.
+
+Primary hypotheses (operational):
+- H1 (causality): For consequence-aligned modulators (drive/event), evaluating the same best genomes with `override_plast_eta=0.0` will degrade held-out performance and/or hazard metrics relative to their native `plast_eta=0.05`.
+- H2 (replication): At higher ES budget and more seeds, drive/event with `plast_eta=0.05` will maintain their “safer hazard profile” relative to A0 no-plastic, and will not show the spike-modulator hazard regression.
+
+Environment (fixed; same as the scale-up above):
+- L1.0 deplete/respawn + L0.2 harmful sources + L1.1 intermittent gradient:
+  - `--num-sources 4 --num-bad-sources 2 --bad-source-integrity-loss 0.25`
+  - `--deplete-sources --respawn-delay 4`
+  - `--bad-source-respawn-delay 0 --bad-source-deplete-p 1.0`
+  - `--grad-dropout-p 0.5`
+  - `--steps 256`
+  - `--success-bonus 50`
+
+Compute (replication sweep; fixed):
+- ES100 `--generations 100 --pop-size 64 --episodes 4 --jit-es`
+- Seeds: 0..9 (10 seeds)
+
+Conditions (replication sweep):
+- B0) A0 no-plastic (baseline): no `--plast-enabled`
+- B1) A2 drive (learning): `--plast-enabled --modulator-kind drive --mod-drive-scale 1.0 --plast-eta 0.05 --plast-lambda 0.9`
+- B1c) A2 drive (no-learning control): same as B1 but `--plast-eta 0.0`
+- B2) A3 event (learning): `--plast-enabled --modulator-kind event --plast-eta 0.05 --plast-lambda 0.9`
+- B2c) A3 event (no-learning control): same as B2 but `--plast-eta 0.0`
+
+Held-out evaluation (required; report per eval seed):
+- `koki2 eval-run --episodes 512 --seed {424242,0} --baseline-policy none`
+- Baselines once per eval seed:
+  - `koki2 baseline-l0 --policy greedy`
+  - `koki2 baseline-l0 --policy random`
+- Plasticity diagnostics to include in reports:
+  - `mean_abs_dw_mean`, `mean_abs_dw_on_event`, `event_step_frac`, `mean_abs_modulator_mean`
+
+Explicit causality check (same best genomes; no extra training):
+- For each trained plastic run dir from B1/B2, also run:
+  - `koki2 eval-run --override-plast-eta 0.0` (same `--episodes/--seed`)
+
+Decision rules:
+- If B1/B2 show no meaningful change under `override_plast_eta=0.0`, treat the current drive/event plasticity as “too weak/sparse to matter” and prioritize a preregistered `--mod-drive-scale` sweep and/or increasing event frequency (environment design) as the next design intervention.
+- If B1/B2 degrade under `override_plast_eta=0.0`, proceed to broaden the claim by testing success-bonus ablations and/or a milder hazard-persistence axis (e.g., `bad_source_deplete_p < 1`) to see where plasticity provides the largest benefit.
+
+---
+
+## 2025-12-16 — Stage 2 replication sweep: ES100 (seeds 0..9) + eta=0 controls (stronger-hazard L1.0+L1.1)
+
+Goal:
+- Execute the preregistered replication sweep above (ES100, 10 seeds) and apply the `override_plast_eta=0.0` causality check.
+
+Training (logs):
+- `runs/stage2_scans/2025-12-16_stage2_repl_train_steps256_badresp0_succ50_g100_p64_ep4_seeds0-9.txt`
+
+Held-out evaluation (512 episodes; eval seeds 424242 and 0):
+- structured JSONL: `runs/stage2_scans/2025-12-16_stage2_repl_eval_steps256_badresp0_succ50_g100_p64_ep4_seeds0-9_ep512_plastmetrics.jsonl`
+- summary text: `runs/stage2_scans/2025-12-16_stage2_repl_eval_steps256_badresp0_succ50_g100_p64_ep4_seeds0-9_ep512_plastmetrics.txt`
+
+Aggregate results (mean ± stdev; n=10 ES seeds; from the eval summary above):
+- B0 (no-plastic):
+  - eval seed 424242: `mean_fitness=285.3335±5.0748`, `mean_bad_arrivals=1.6510±0.4575`, `mean_integrity_min=0.5878±0.1138`
+  - eval seed 0: `mean_fitness=284.2909±5.3871`, `mean_bad_arrivals=1.6660±0.4592`, `mean_integrity_min=0.5839±0.1143`
+- B1 (drive, eta=0.05, native evaluation):
+  - eval seed 424242: `mean_fitness=287.1976±3.4521`, `mean_bad_arrivals=1.6201±0.4248`, `mean_integrity_min=0.5952±0.1059`
+  - eval seed 0: `mean_fitness=285.8446±3.5068`, `mean_bad_arrivals=1.6402±0.4154`, `mean_integrity_min=0.5902±0.1036`
+- B2 (event, eta=0.05, native evaluation):
+  - eval seed 424242: `mean_fitness=287.1846±3.7685`, `mean_bad_arrivals=1.5951±0.4808`, `mean_integrity_min=0.6016±0.1196`
+  - eval seed 0: `mean_fitness=284.9337±3.8156`, `mean_bad_arrivals=1.6660±0.4860`, `mean_integrity_min=0.5840±0.1212`
+- Plasticity diagnostics remain sparse-but-nonzero (native evaluation):
+  - B1 drive: `mean_abs_dw_on_event ≈ 1.3e-4`, `event_step_frac ≈ 0.014`
+  - B2 event: `mean_abs_dw_on_event ≈ 2.1e-4`, `event_step_frac ≈ 0.014–0.015`
+
+Controls / causality probe:
+- Eta=0 training controls (B1c/B2c) matched B0 exactly in this sweep (same per-seed best fitness in the training log and identical held-out aggregates), consistent with “eta=0 eliminates within-life learning and does not otherwise change the evaluation function”.
+- `override_plast_eta=0.0` evaluation on the learned B1/B2 genomes produced *very similar* aggregates to native evaluation (no clear drop), suggesting that **within-life weight updates are not (yet) a dominant causal driver** of the B1/B2 held-out performance on this specific protocol.
+
+Interpretation / next move (per prereg decision rules):
+- The replication does not yet support a strong “plasticity is necessary for performance” claim in this setup; the effect sizes vs B0 are modest and the eta=0 override does not meaningfully degrade performance.
+- Next: we need an environment variant where remembering/avoiding hazards within-episode is more valuable. The most direct knob already present in the env spec is `bad_source_deplete_p < 1.0` (bad sources persist after contact), which should increase the value of consequence-driven within-life adaptation; this should be combined with a preregistered `--mod-drive-scale` sweep if modulator magnitudes remain too small.

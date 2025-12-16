@@ -237,6 +237,12 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_run.add_argument("--seed", type=int, default=0, help="PRNG seed for evaluation episode keys.")
     eval_run.add_argument("--episodes", type=int, default=64)
     eval_run.add_argument(
+        "--override-plast-eta",
+        type=float,
+        default=None,
+        help="Override plast_eta from the run manifest during evaluation (e.g., 0.0 for a no-learning control).",
+    )
+    eval_run.add_argument(
         "--baseline-policy",
         type=str,
         default="greedy",
@@ -627,6 +633,9 @@ def main(argv: list[str] | None = None) -> None:
             mean_ent = float(jax.device_get(jnp.mean(outs.action_entropy)))
             mean_mode = float(jax.device_get(jnp.mean(outs.action_mode_frac)))
             mean_dw = float(jax.device_get(jnp.mean(outs.mean_abs_dw_mean)))
+            mean_mod = float(jax.device_get(jnp.mean(outs.mean_abs_modulator_mean)))
+            mean_dw_event = float(jax.device_get(jnp.mean(outs.mean_abs_dw_on_event)))
+            mean_event_frac = float(jax.device_get(jnp.mean(outs.event_step_frac)))
 
             print(
                 "baseline_l0"
@@ -642,6 +651,9 @@ def main(argv: list[str] | None = None) -> None:
                 f" mean_action_entropy={mean_ent:.4f}"
                 f" mean_action_mode_frac={mean_mode:.3f}"
                 f" mean_abs_dw_mean={mean_dw:.6f}"
+                f" mean_abs_modulator_mean={mean_mod:.6f}"
+                f" mean_abs_dw_on_event={mean_dw_event:.6f}"
+                f" event_step_frac={mean_event_frac:.4f}"
             )
             return
 
@@ -675,7 +687,9 @@ def main(argv: list[str] | None = None) -> None:
                 theta=float(dev["theta"]),
                 tau_m=float(dev["tau_m"]),
                 plast_enabled=bool(dev["plast_enabled"]),
-                plast_eta=float(dev["plast_eta"]),
+                plast_eta=float(args.override_plast_eta)
+                if args.override_plast_eta is not None
+                else float(dev["plast_eta"]),
                 plast_lambda=float(dev["plast_lambda"]),
                 modulator_kind=int(dev.get("modulator_kind", 0)),
                 mod_drive_scale=float(dev.get("mod_drive_scale", 1.0)),
@@ -708,6 +722,9 @@ def main(argv: list[str] | None = None) -> None:
                 mean_ent = float(jax.device_get(jnp.mean(out.action_entropy)))
                 mean_mode = float(jax.device_get(jnp.mean(out.action_mode_frac)))
                 mean_dw = float(jax.device_get(jnp.mean(out.mean_abs_dw_mean)))
+                mean_mod = float(jax.device_get(jnp.mean(out.mean_abs_modulator_mean)))
+                mean_dw_event = float(jax.device_get(jnp.mean(out.mean_abs_dw_on_event)))
+                mean_event_frac = float(jax.device_get(jnp.mean(out.event_step_frac)))
                 print(
                     f"{tag}"
                     f" episodes={args.episodes}"
@@ -721,9 +738,15 @@ def main(argv: list[str] | None = None) -> None:
                     f" mean_action_entropy={mean_ent:.4f}"
                     f" mean_action_mode_frac={mean_mode:.3f}"
                     f" mean_abs_dw_mean={mean_dw:.6f}"
+                    f" mean_abs_modulator_mean={mean_mod:.6f}"
+                    f" mean_abs_dw_on_event={mean_dw_event:.6f}"
+                    f" event_step_frac={mean_event_frac:.4f}"
                 )
 
-            print(f"eval_run run_dir={run_dir} eval_seed={args.seed}")
+            extra = ""
+            if args.override_plast_eta is not None:
+                extra = f" override_plast_eta={float(args.override_plast_eta)}"
+            print(f"eval_run run_dir={run_dir} eval_seed={args.seed}{extra}")
             _summ("best_genome", outs)
 
             if args.baseline_policy != "none":

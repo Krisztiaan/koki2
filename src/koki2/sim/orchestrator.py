@@ -68,6 +68,9 @@ def simulate_lifetime(
     num_actions = params.motor_b.shape[0]
     action_counts = jnp.zeros((num_actions,), dtype=jnp.float32)
     dw_sum = jnp.array(0.0, dtype=jnp.float32)
+    mod_abs_sum = jnp.array(0.0, dtype=jnp.float32)
+    dw_event_sum = jnp.array(0.0, dtype=jnp.float32)
+    event_steps = jnp.array(0.0, dtype=jnp.float32)
 
     init = (
         env_state,
@@ -84,6 +87,9 @@ def simulate_lifetime(
         success,
         action_counts,
         dw_sum,
+        mod_abs_sum,
+        dw_event_sum,
+        event_steps,
     )
 
     def step(carry, t):
@@ -102,6 +108,9 @@ def simulate_lifetime(
             success,
             action_counts,
             dw_sum,
+            mod_abs_sum,
+            dw_event_sum,
+            event_steps,
         ) = carry
 
         dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
@@ -136,6 +145,12 @@ def simulate_lifetime(
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
             action_counts2 = action_counts.at[fwd.action].add(jnp.array(1.0, dtype=jnp.float32))
             dw_sum2 = dw_sum + agent_log.mean_abs_dw
+            plast_on = params.plast_enabled.astype(jnp.float32)
+            mod_abs_sum2 = mod_abs_sum + plast_on * jnp.abs(agent_log.modulator)
+            is_event = jnp.logical_or(env_log.energy_gained != 0.0, env_log.integrity_lost != 0.0)
+            is_event_f = is_event.astype(jnp.float32)
+            dw_event_sum2 = dw_event_sum + agent_log.mean_abs_dw * is_event_f
+            event_steps2 = event_steps + is_event_f
 
             return (
                 (
@@ -153,6 +168,9 @@ def simulate_lifetime(
                     success2,
                     action_counts2,
                     dw_sum2,
+                    mod_abs_sum2,
+                    dw_event_sum2,
+                    event_steps2,
                 ),
                 (agent_log, env_log, _reward),
             )
@@ -185,6 +203,9 @@ def simulate_lifetime(
                     success,
                     action_counts,
                     dw_sum,
+                    mod_abs_sum,
+                    dw_event_sum,
+                    event_steps,
                 ),
                 (zero_agent_log, zero_env_log, jnp.array(0.0, dtype=jnp.float32)),
             )
@@ -208,6 +229,9 @@ def simulate_lifetime(
         success,
         action_counts,
         dw_sum,
+        mod_abs_sum,
+        dw_event_sum,
+        event_steps,
     ) = final
 
     safe_steps = jnp.maximum(t_alive.astype(jnp.float32), jnp.array(1.0, dtype=jnp.float32))
@@ -215,6 +239,9 @@ def simulate_lifetime(
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
     mean_abs_dw_mean = dw_sum / safe_steps
+    mean_abs_modulator_mean = mod_abs_sum / safe_steps
+    mean_abs_dw_on_event = dw_event_sum / jnp.maximum(event_steps, jnp.array(1.0, dtype=jnp.float32))
+    event_step_frac = event_steps / safe_steps
 
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
@@ -232,6 +259,9 @@ def simulate_lifetime(
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
         mean_abs_dw_mean=mean_abs_dw_mean,
+        mean_abs_modulator_mean=mean_abs_modulator_mean,
+        mean_abs_dw_on_event=mean_abs_dw_on_event,
+        event_step_frac=event_step_frac,
     )
 
 
@@ -522,6 +552,7 @@ def simulate_lifetime_baseline_greedy(
     success = jnp.array(False, dtype=jnp.bool_)
     num_actions = 5
     action_counts = jnp.zeros((num_actions,), dtype=jnp.float32)
+    event_steps = jnp.array(0.0, dtype=jnp.float32)
 
     init = (
         env_state,
@@ -536,6 +567,7 @@ def simulate_lifetime_baseline_greedy(
         t_alive,
         success,
         action_counts,
+        event_steps,
     )
 
     def step(carry, t):
@@ -552,6 +584,7 @@ def simulate_lifetime_baseline_greedy(
             t_alive,
             success,
             action_counts,
+            event_steps,
         ) = carry
 
         dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
@@ -571,6 +604,8 @@ def simulate_lifetime_baseline_greedy(
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
             action_counts2 = action_counts.at[action].add(jnp.array(1.0, dtype=jnp.float32))
+            is_event = jnp.logical_or(env_log.energy_gained != 0.0, env_log.integrity_lost != 0.0)
+            event_steps2 = event_steps + is_event.astype(jnp.float32)
             return (
                 env_state2,
                 obs2,
@@ -584,6 +619,7 @@ def simulate_lifetime_baseline_greedy(
                 t_alive2,
                 success2,
                 action_counts2,
+                event_steps2,
             )
 
         def skip(_):
@@ -606,6 +642,7 @@ def simulate_lifetime_baseline_greedy(
         t_alive,
         success,
         action_counts,
+        event_steps,
     ) = final
 
     safe_steps = jnp.maximum(t_alive.astype(jnp.float32), jnp.array(1.0, dtype=jnp.float32))
@@ -613,6 +650,9 @@ def simulate_lifetime_baseline_greedy(
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
     mean_abs_dw_mean = jnp.array(0.0, dtype=jnp.float32)
+    mean_abs_modulator_mean = jnp.array(0.0, dtype=jnp.float32)
+    mean_abs_dw_on_event = jnp.array(0.0, dtype=jnp.float32)
+    event_step_frac = event_steps / safe_steps
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
         + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
@@ -629,6 +669,9 @@ def simulate_lifetime_baseline_greedy(
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
         mean_abs_dw_mean=mean_abs_dw_mean,
+        mean_abs_modulator_mean=mean_abs_modulator_mean,
+        mean_abs_dw_on_event=mean_abs_dw_on_event,
+        event_step_frac=event_step_frac,
     )
 
 
@@ -652,6 +695,7 @@ def simulate_lifetime_baseline_random(
     success = jnp.array(False, dtype=jnp.bool_)
     num_actions = 5
     action_counts = jnp.zeros((num_actions,), dtype=jnp.float32)
+    event_steps = jnp.array(0.0, dtype=jnp.float32)
 
     init = (
         env_state,
@@ -666,6 +710,7 @@ def simulate_lifetime_baseline_random(
         t_alive,
         success,
         action_counts,
+        event_steps,
     )
 
     def step(carry, t):
@@ -682,6 +727,7 @@ def simulate_lifetime_baseline_random(
             t_alive,
             success,
             action_counts,
+            event_steps,
         ) = carry
 
         dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
@@ -700,6 +746,8 @@ def simulate_lifetime_baseline_random(
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
             action_counts2 = action_counts.at[action].add(jnp.array(1.0, dtype=jnp.float32))
+            is_event = jnp.logical_or(env_log.energy_gained != 0.0, env_log.integrity_lost != 0.0)
+            event_steps2 = event_steps + is_event.astype(jnp.float32)
             return (
                 env_state2,
                 obs2,
@@ -713,6 +761,7 @@ def simulate_lifetime_baseline_random(
                 t_alive2,
                 success2,
                 action_counts2,
+                event_steps2,
             )
 
         def skip(_):
@@ -735,6 +784,7 @@ def simulate_lifetime_baseline_random(
         t_alive,
         success,
         action_counts,
+        event_steps,
     ) = final
 
     safe_steps = jnp.maximum(t_alive.astype(jnp.float32), jnp.array(1.0, dtype=jnp.float32))
@@ -742,6 +792,9 @@ def simulate_lifetime_baseline_random(
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
     mean_abs_dw_mean = jnp.array(0.0, dtype=jnp.float32)
+    mean_abs_modulator_mean = jnp.array(0.0, dtype=jnp.float32)
+    mean_abs_dw_on_event = jnp.array(0.0, dtype=jnp.float32)
+    event_step_frac = event_steps / safe_steps
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
         + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
@@ -758,6 +811,9 @@ def simulate_lifetime_baseline_random(
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
         mean_abs_dw_mean=mean_abs_dw_mean,
+        mean_abs_modulator_mean=mean_abs_modulator_mean,
+        mean_abs_dw_on_event=mean_abs_dw_on_event,
+        event_step_frac=event_step_frac,
     )
 
 
@@ -782,6 +838,7 @@ def simulate_lifetime_baseline_stay(
     num_actions = 5
     action_counts = jnp.zeros((num_actions,), dtype=jnp.float32)
     action = jnp.array(0, dtype=jnp.int32)
+    event_steps = jnp.array(0.0, dtype=jnp.float32)
 
     init = (
         env_state,
@@ -796,6 +853,7 @@ def simulate_lifetime_baseline_stay(
         t_alive,
         success,
         action_counts,
+        event_steps,
     )
 
     def step(carry, t):
@@ -812,6 +870,7 @@ def simulate_lifetime_baseline_stay(
             t_alive,
             success,
             action_counts,
+            event_steps,
         ) = carry
 
         dev_state = DevelopmentState(age_step=t, phi=_phi(t, steps))
@@ -828,6 +887,8 @@ def simulate_lifetime_baseline_stay(
             success2 = jnp.logical_or(success, env_log.reached_source)
             alive2 = jnp.logical_and(alive, jnp.logical_not(done))
             action_counts2 = action_counts.at[action].add(jnp.array(1.0, dtype=jnp.float32))
+            is_event = jnp.logical_or(env_log.energy_gained != 0.0, env_log.integrity_lost != 0.0)
+            event_steps2 = event_steps + is_event.astype(jnp.float32)
             return (
                 env_state2,
                 obs2,
@@ -841,6 +902,7 @@ def simulate_lifetime_baseline_stay(
                 t_alive2,
                 success2,
                 action_counts2,
+                event_steps2,
             )
 
         def skip(_):
@@ -863,6 +925,7 @@ def simulate_lifetime_baseline_stay(
         t_alive,
         success,
         action_counts,
+        event_steps,
     ) = final
 
     safe_steps = jnp.maximum(t_alive.astype(jnp.float32), jnp.array(1.0, dtype=jnp.float32))
@@ -870,6 +933,9 @@ def simulate_lifetime_baseline_stay(
     action_entropy = -jnp.sum(p * jnp.log(p + jnp.array(1e-8, dtype=jnp.float32)))
     action_mode_frac = jnp.max(p)
     mean_abs_dw_mean = jnp.array(0.0, dtype=jnp.float32)
+    mean_abs_modulator_mean = jnp.array(0.0, dtype=jnp.float32)
+    mean_abs_dw_on_event = jnp.array(0.0, dtype=jnp.float32)
+    event_step_frac = event_steps / safe_steps
     fitness = (
         jnp.array(sim_cfg.fitness_alpha, dtype=jnp.float32) * t_alive.astype(jnp.float32)
         + jnp.array(sim_cfg.fitness_beta, dtype=jnp.float32) * energy_gained_total
@@ -886,4 +952,7 @@ def simulate_lifetime_baseline_stay(
         action_entropy=action_entropy,
         action_mode_frac=action_mode_frac,
         mean_abs_dw_mean=mean_abs_dw_mean,
+        mean_abs_modulator_mean=mean_abs_modulator_mean,
+        mean_abs_dw_on_event=mean_abs_dw_on_event,
+        event_step_frac=event_step_frac,
     )

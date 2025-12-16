@@ -44,24 +44,28 @@ Evaluation (required for interpretation):
 - Always report:
   - `mean_fitness`, `success_rate`, `mean_t_alive`
   - `mean_bad_arrivals`, `mean_integrity_min`
-  - `mean_abs_dw_mean` (to verify the run is meaningfully plastic)
+  - plasticity usage diagnostics:
+    - `mean_abs_dw_mean` (averaged across all alive steps)
+    - `mean_abs_dw_on_event` + `event_step_frac` (to detect sparse, event-gated updates)
+    - `mean_abs_modulator_mean` (to sanity-check modulator magnitude)
 - Compare against baselines (`koki2 baseline-l0 --policy greedy/random`) on the same eval seeds/episodes.
 
 ---
 
 ## Work items (next)
 
-1. Pre-register the Stage 2 run matrix in `WORK.md` (before running anything):
-   - no-plastic vs plastic
-   - plastic variants: `--modulator-kind {spike,drive,event}` and a small `--plast-eta` grid (hold `--plast-lambda` fixed)
-   - keep env + compute fixed except where explicitly ablated (e.g., success-bonus)
-2. Run a small local sweep (few seeds) to sanity-check:
-   - plasticity usage isn’t effectively zero (`mean_abs_dw_mean` not ~0)
-   - rollouts remain stable (no NaNs; no tracer leaks)
-3. Scale the sweep budgets on Colab (more generations and/or more seeds), keeping Colab notebooks in sync:
-   - add a dedicated notebook under `colab/` for this Stage 2 protocol
-4. Analyze results and decide next move:
-   - if plastic improves fitness but worsens hazard contact, treat modulator kind + eta as the primary knobs to test first
+Status (since checkpoint):
+- Completed local pilot + scale-up comparisons (see `WORK.md` and `colab/stage2_*` notebooks).
+- Added event-gated plasticity usage metrics (`mean_abs_dw_on_event`, `event_step_frac`) to disambiguate “near-zero mean” from “sparse learning”.
+- Ran an ES100 replication sweep with `plast_eta=0` controls and an `override_plast_eta=0.0` eval probe; in the current stronger-hazard L1.0+L1.1 setup this did **not** produce a strong causal “learning is necessary” signal.
+
+Next (Stage 2):
+1. Create a hazard-persistent variant where within-episode consequence learning should matter more:
+   - keep the current stronger-hazard setup, but set `--bad-source-deplete-p < 1.0` (bad sources persist after contact).
+2. Run a small pilot matrix (few seeds) on this variant:
+   - A0 no-plastic vs drive/event plastic at fixed compute, and evaluate each best genome with `koki2 eval-run --override-plast-eta 0.0` to test causality.
+3. If plasticity still looks too weak/sparse (low `mean_abs_modulator_mean` and tiny `mean_abs_dw_on_event`), preregister a small `--mod-drive-scale` sweep (e.g. 1, 5, 10) and re-run the pilot.
+4. Once a protocol shows a clear causal delta under the eta override, scale budgets (more seeds and/or ES generations) and keep Colab notebooks in sync.
 
 ---
 
