@@ -113,3 +113,50 @@ Quick interpretation (provisional; pilot n=3 seeds):
 Next step (pre-registered decision rule application):
 - Scale A0 vs A2/A3 to ≥5 seeds (and/or ES100) **before** changing axes.
 - If we still see near-zero `mean_abs_dw_mean` for drive/event, treat “eliciting non-trivial plasticity under consequence modulation” as the next design problem (likely via `mod_drive_scale` sweeps and/or changing the eligibility signal), and log that as a new prereg entry.
+
+Planned scale-up run (next; execute as written, no mid-run tuning):
+- Same env as the pilot above (steps=256, bad_respawn=0, succ_bonus=50).
+- ES30 with seeds 0..4.
+- Conditions:
+  - A0 no-plastic
+  - A1 spike `eta=0.05, lambda=0.9`
+  - A2 drive `eta=0.05, lambda=0.9, mod_drive_scale=1.0`
+  - A3 event `eta=0.05, lambda=0.9`
+- Held-out eval: 512 episodes, eval seeds {424242, 0}, baselines greedy/random on the same episode keys.
+
+---
+
+## 2025-12-16 — Stage 2 scale-up: A0 vs spike/drive/event (eta=0.05) on stronger-hazard L1.0+L1.1 (seeds 0..4)
+
+Goal:
+- Execute the planned 5-seed scale-up to determine whether the pilot patterns persist:
+  - spike-modulated plasticity: does it still trade off success for hazard contact/survival?
+  - drive/event modulators: do they still show near-zero plasticity usage, and are any apparent gains robust?
+
+Training (logs):
+- `runs/stage2_scans/2025-12-16_stage2_scale_train_steps256_badresp0_succ50_g30_p64_ep4_seeds0-4.txt`
+
+Held-out evaluation (512 episodes; eval seeds 424242 and 0; logs + structured JSONL):
+- `runs/stage2_scans/2025-12-16_stage2_scale_eval_steps256_badresp0_succ50_ep512.txt`
+- `runs/stage2_scans/2025-12-16_stage2_scale_eval_steps256_badresp0_succ50_ep512.jsonl`
+
+Aggregate results across seeds 0..4 (mean ± stdev; from JSONL):
+- eval seed 424242:
+  - A0 no-plastic: `mean_fitness=283.4750±4.6161`, `success_rate=0.7870±0.0495`, `mean_t_alive=243.28±6.53`, `mean_bad_arrivals=1.7551±0.4448`, `mean_integrity_min=0.5616±0.1111`
+  - A1 spike (eta=0.05): `mean_fitness=274.5316±21.8355`, `success_rate=0.8586±0.0632`, `mean_t_alive=230.50±23.51`, `mean_bad_arrivals=2.3024±0.7355`, `mean_integrity_min=0.4248±0.1834`, `mean_abs_dw_mean=0.014302±0.018244`
+  - A2 drive (eta=0.05, scale=1.0): `mean_fitness=286.8070±2.9211`, `success_rate=0.7476±0.0265`, `mean_t_alive=248.76±2.26`, `mean_bad_arrivals=1.3442±0.1374`, `mean_integrity_min=0.6640±0.0343`, `mean_abs_dw_mean=0.000005±0.000005`
+  - A3 event (eta=0.05): `mean_fitness=289.0738±2.8994`, `success_rate=0.7714±0.0522`, `mean_t_alive=249.82±5.38`, `mean_bad_arrivals=1.4180±0.4252`, `mean_integrity_min=0.6457±0.1059`, `mean_abs_dw_mean=0.000002±0.000001`
+- eval seed 0:
+  - A0 no-plastic: `mean_fitness=282.0189±5.8863`, `success_rate=0.7790±0.0554`, `mean_t_alive=242.22±8.14`, `mean_bad_arrivals=1.7539±0.4251`, `mean_integrity_min=0.5621±0.1057`
+  - A1 spike (eta=0.05): `mean_fitness=273.0981±21.3372`, `success_rate=0.8466±0.0733`, `mean_t_alive=229.68±23.43`, `mean_bad_arrivals=2.2961±0.6991`, `mean_integrity_min=0.4263±0.1744`, `mean_abs_dw_mean=0.014436±0.018349`
+  - A2 drive (eta=0.05, scale=1.0): `mean_fitness=285.2109±2.5313`, `success_rate=0.7356±0.0179`, `mean_t_alive=247.76±2.59`, `mean_bad_arrivals=1.3852±0.1305`, `mean_integrity_min=0.6537±0.0326`, `mean_abs_dw_mean=0.000005±0.000005`
+  - A3 event (eta=0.05): `mean_fitness=286.7557±2.5159`, `success_rate=0.7442±0.0673`, `mean_t_alive=248.86±5.62`, `mean_bad_arrivals=1.4730±0.4112`, `mean_integrity_min=0.6320±0.1024`, `mean_abs_dw_mean=0.000003±0.000001`
+
+Interpretation (provisional; n=5 seeds, fixed ES30 budget):
+- Spike-modulated plasticity shows the clearest “plasticity usage” signal (`mean_abs_dw_mean ~ 1e-2`) and increases success rate, but it also increases hazard contact and reduces survival time, resulting in lower mean fitness than the no-plastic baseline under this stronger-hazard L1.0+L1.1 setup.
+- Drive/event modulators produce **extremely small** average weight updates (`mean_abs_dw_mean ~ 1e-6`) yet show higher mean fitness and improved hazard metrics vs A0 across both held-out eval seeds; this may indicate (a) rare but effective within-life updates that are diluted in the average, or (b) that these settings are effectively “almost fixed-weight” and the apparent gains reflect the changed genotype→phenotype mapping (still needs follow-up).
+
+Next step (new prereg needed before changing axes):
+- Decide whether Stage 2’s next objective is:
+  A) “demonstrate plasticity helps” (then prioritize *eliciting non-trivial* drive/event plasticity via a `--mod-drive-scale` sweep and/or eligibility redesign), or
+  B) “compare strains under fixed compute” (then scale A0 vs A2/A3 budgets/seeds and keep reporting `mean_abs_dw_mean` as a guardrail).
